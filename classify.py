@@ -363,9 +363,15 @@ class ClipClassifier(CPTVFileProcessor):
         # record results in text file.
         f = open(meta_filename,'w')
         save_file = {}
-        save_file['tags'] = list(set([self.classifier.classes[prediction.label()] for prediction in self.track_prediction.values()]))
-        save_file['max_confidence'] = max([0.0]+[prediction.confidence() for prediction in self.track_prediction.values()])
-        json.dump(save_file,f)
+        for track, prediction in self.track_prediction.items():
+            track_info = {}
+            save_file['tracks'] = track_info
+            track_info['start_time'] = track.start_time.isoformat()
+            track_info['end_time'] = track.end_time.isoformat()
+            track_info['label'] = self.classifier.classes[prediction.label()]
+            track_info['confidence'] = prediction.confidence()
+            track_info['clarity'] = prediction.clarity
+        json.dump(save_file, f, indent=4)
 
         ms_per_frame = (time.time() - start) * 1000 / max(1, len(tracker.frames))
         if self.verbose:
@@ -375,8 +381,7 @@ def main():
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('source',
-                        help='a CPTV file to process, or a folder name')
+    parser.add_argument('source',help='a CPTV file to process, or a folder name')
 
     parser.add_argument('-p', '--enable-preview', action='count', help='Enables preview MPEG files (can be slow)')
     parser.add_argument('-v', '--verbose', action='count', help='Display additional information.')
