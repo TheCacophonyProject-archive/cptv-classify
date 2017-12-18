@@ -4,15 +4,15 @@ Script to classify animals within a CPTV video file.
 
 import argparse
 import os
-from trackextractor import TrackExtractor, Track
-import trackclassifier
+from ml_tools.cptvfileprocessor import CPTVFileProcessor
+from ml_tools.trackextractor import TrackExtractor, Track
+from ml_tools import trackclassifier
 import numpy as np
 import json
 from ml_tools.tools import write_mpeg, load_colormap, convert_heat_to_img
 import math
 from PIL import Image, ImageDraw
 import time
-from cptvfileprocessor import CPTVFileProcessor
 
 DEFAULT_BASE_PATH = "c:\\cac"
 
@@ -363,9 +363,10 @@ class ClipClassifier(CPTVFileProcessor):
         # record results in text file.
         f = open(meta_filename,'w')
         save_file = {}
+        save_file['tracks'] = []
         for track, prediction in self.track_prediction.items():
             track_info = {}
-            save_file['tracks'] = track_info
+            save_file['tracks'].append(track_info)
             track_info['start_time'] = track.start_time.isoformat()
             track_info['end_time'] = track.end_time.isoformat()
             track_info['label'] = self.classifier.classes[prediction.label()]

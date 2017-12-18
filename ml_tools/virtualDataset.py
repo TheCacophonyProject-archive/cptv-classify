@@ -76,7 +76,8 @@ class TrackInfo():
     def __str__(self):
         return "{0} segments:{1} weight:{2:.1f}".format(self.source, len(self.segments), self.weight)
 
-    def get_segments_and_stats(self, min_segment_mass=None, max_segment_mass=None, max_cropping=None, segment_spacing = 9):
+    def get_segments_and_stats(self, min_segment_mass=None, max_segment_mass=None, max_cropping=None, segment_spacing = 9,
+                               labels_to_ignore_mass_threshold = None):
         """
         Gets track statistics and segments for track.
         Returns number of tracks loaded, and number filtered
@@ -88,6 +89,8 @@ class TrackInfo():
             raise Exception("Stats file not found for track {0}".format(self.source))
 
         stats = load_track_stats(stats_filename)
+
+        label = stats['tag']
 
         mass_history = stats['mass_history']
         bounds_history = stats['bounds_history']
@@ -104,24 +107,33 @@ class TrackInfo():
 
             segment_frames = len(mass_history[segment_start:segment_start + TrackInfo.SEGMENT_WIDTH])
             segment_mass = sum(mass_history[segment_start:segment_start + TrackInfo.SEGMENT_WIDTH]) / segment_frames
+            segment_min_mass = min(mass_history[segment_start:segment_start + TrackInfo.SEGMENT_WIDTH])
             segment_crop = sum(crop_history[segment_start:segment_start + TrackInfo.SEGMENT_WIDTH]) / segment_frames
 
             # might have a short segment on the last iteration, so discard it here
             if segment_frames != TrackInfo.SEGMENT_WIDTH:
                 continue
 
-            # make sure segment has enough mass to be useful
-            if min_segment_mass is not None and segment_mass < min_segment_mass:
-                discarded_segments += 1
-                continue
-            if max_segment_mass is not None and segment_mass > max_segment_mass:
-                discarded_segments += 1
-                continue
+            if labels_to_ignore_mass_threshold is None or label not in labels_to_ignore_mass_threshold:
 
-            # check how cropped each segment is
-            if max_cropping is not None and segment_crop > max_cropping:
-                discarded_segments += 1
-                continue
+                # if any frame has less than half the required mass then remove the entire segment.
+                if min_segment_mass is not None and segment_min_mass < min_segment_mass / 2:
+                    discarded_segments += 1
+                    continue
+
+                # make sure segment has enough mass to be useful
+                if min_segment_mass is not None and segment_mass < min_segment_mass:
+                    discarded_segments += 1
+                    continue
+
+                if max_segment_mass is not None and segment_mass > max_segment_mass:
+                    discarded_segments += 1
+                    continue
+
+                # check how cropped each segment is
+                if max_cropping is not None and segment_crop > max_cropping:
+                    discarded_segments += 1
+                    continue
 
             segment_offsets.append(segment_start)
             segment_masses.append(segment_mass)
@@ -135,7 +147,7 @@ class TrackInfo():
         self.segments = []
         for index, offset, mass in zip(range(len(segment_offsets)), segment_offsets, segment_masses):
             self.segments.append(
-                SegmentInfo(self.source, offset, index, self.weight / len(segment_offsets), stats['tag'], mass))
+                SegmentInfo(self.source, offset, index, self.weight / len(segment_offsets), label, mass))
 
         return len(segment_offsets), discarded_segments
 
@@ -162,6 +174,8 @@ class VirtualDataset():
         # each segment must have an average active pixel count at least equal to this
         self.min_segment_mass = 10
         self.max_segment_mass = None
+        # a list of labels that should ignore the mass thresholds
+        self.ignore_segment_mass_thresholds = set()
 
         # spacing in frames between segments
         self.segment_spacing = 9
@@ -187,6 +201,10 @@ class VirtualDataset():
         self.preloader_thread = None
 
         self.reloader_stop_flag = False
+
+        self.shutdown_worker_threads = False
+
+        self.normalisation_constants = []
 
 
     @property
@@ -278,7 +296,11 @@ class VirtualDataset():
                 continue
 
             track = TrackInfo(track_name)
-            _, segments_disgarded = track.get_segments_and_stats(self.min_segment_mass, self.max_segment_mass, self.segment_spacing)
+            _, segments_disgarded = track.get_segments_and_stats(
+                min_segment_mass=self.min_segment_mass, max_segment_mass=self.max_segment_mass,
+                segment_spacing=self.segment_spacing,
+                labels_to_ignore_mass_threshold=self.ignore_segment_mass_thresholds
+            )
             self.disgarded_segment_count += segments_disgarded
 
             self.tracks[track_name] = track
@@ -342,15 +364,16 @@ class VirtualDataset():
         frame_count, width, height = frames.shape
 
         # filtered needs threshold applied?
+        # this removes some useful information, but also helps with overfitting.
         filtered = filtered - 20
         filtered[filtered < 0] = 0
 
-        # standard channels should be normalised.
-        frames = normalise(frames)
-        filtered = normalise(filtered)
-
-        # the motion vectors can not be normalised as we need to know how fast the object is moving and where
-        # center is.  We may still need to apply a little scaling so that standard deviation is close to 1 though.
+        # apply normalisation
+        if len(self.normalisation_constants) != 0:
+            frames = (frames + self.normalisation_constants[0][0]) / self.normalisation_constants[0][1]
+            filtered = (filtered + self.normalisation_constants[1][0]) / self.normalisation_constants[1][1]
+            flow[:, :, 0] = (flow[:, :, 0] + self.normalisation_constants[2][0]) / self.normalisation_constants[2][1]
+            flow[:, :, 1] = (flow[:, :, 1] + self.normalisation_constants[3][0]) / self.normalisation_constants[3][1]
 
         segment_data_list = []
         for segment in track.segments:
@@ -378,10 +401,7 @@ class VirtualDataset():
         seg = self.fetch_segment(self.segments[0], enable_slow_read=True)
         _, width, height, channels = seg.shape
 
-        if self.single_frame_mode:
-            data = np.zeros((total_segments, width, height, channels), dtype=np.float16)
-        else:
-            data = np.zeros((total_segments, TrackInfo.SEGMENT_WIDTH, width, height, channels), dtype=np.float16)
+        data = np.zeros((total_segments, TrackInfo.SEGMENT_WIDTH, width, height, channels), dtype=np.float16)
 
         class_indexes = []
 
@@ -397,11 +417,7 @@ class VirtualDataset():
 
             track_data = np.asarray(segments_data)
 
-            if self.single_frame_mode:
-                track_data = track_data[:, TrackInfo.SEGMENT_WIDTH // 2, :, :, :]
-                data[counter:counter + len(segments_data), :, :, :] = track_data
-            else:
-                data[counter:counter + len(segments_data), :, :, :, :] = track_data
+            data[counter:counter + len(segments_data), :, :, :, :] = track_data
 
             counter += len(segments_data)
 
@@ -455,8 +471,13 @@ class VirtualDataset():
         """ Returns the total weight for all segments of given class. """
         return [segment for segment in self.segments if segment.tag == class_name]
 
-    def weight_balance(self):
-        """ Adjusts weights so that every class is evenly represented. """
+    def weight_balance(self, weight_modifiers=None):
+        """
+        Adjusts weights so that every class is evenly represented.
+        :param weight_modifiers: if specified is a dictionary mapping from class name to weight modifier,
+            where < 1 sampled less frequently, and > 1 is sampled more frequently.
+        :return:
+        """
 
         class_weight = {}
         mean_class_weight = 0
@@ -467,14 +488,15 @@ class VirtualDataset():
 
         scale_factor = {}
         for class_name in self.classes:
-            scale_factor[class_name] = mean_class_weight / class_weight[class_name]
+            modifier = 1.0 if weight_modifiers is None else weight_modifiers.get(class_name, 1.0)
+            scale_factor[class_name] = mean_class_weight / class_weight[class_name] * modifier
 
         for segment in self.segments:
             segment.weight *= scale_factor[segment.tag]
 
         self.rebuild_cdf()
 
-    def resample_balance(self, max_ratio=2.0):
+    def resample_balance(self, max_ratio=2.0, weight_modifiers=None):
         """ Removes segments until all classes are with given ratio """
 
         class_count = {}
@@ -482,7 +504,9 @@ class VirtualDataset():
 
         for class_name in self.classes:
             class_count[class_name] = self.get_class_segments_count(class_name)
-            min_class_count = min(min_class_count, class_count[class_name])
+            modifier = 1.0 if weight_modifiers is None else weight_modifiers.get(class_name, 1.0)
+            if modifier > 0:
+                min_class_count = min(min_class_count, class_count[class_name] / modifier)
 
         max_class_count = int(min_class_count * max_ratio)
 
@@ -492,7 +516,8 @@ class VirtualDataset():
             segments = self.get_class_segments(class_name)
             if len(segments) > max_class_count:
                 # resample down
-                segments = np.random.choice(segments, max_class_count, replace=False).tolist()
+                modifier = 1.0 if weight_modifiers is None else weight_modifiers.get(class_name, 1.0)
+                segments = np.random.choice(segments, int(max_class_count * modifier), replace=False).tolist()
             new_segments += segments
 
         self.segments = new_segments

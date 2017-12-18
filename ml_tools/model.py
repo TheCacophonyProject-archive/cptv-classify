@@ -11,7 +11,7 @@ import json
 import dateutil
 import binascii
 import time
-from ml_tools import *
+from ml_tools import tools
 
 # folder to save model while it's training.  Make sure this isn't on a dropbox folder and it will cause a crash.
 CHECKPOINT_FOLDER = "c:\cac\checkpoints"
@@ -49,8 +49,12 @@ class Model:
         # restore best weights found during training rather than the most recently one.
         self.use_best_weights = True
 
-        self.sess = get_session()
+        self.sess = tools.get_session()
         self.batch_size = 16
+
+        self.eval_score = 0.0
+
+        self.normalisation_constants = None
 
 
     def eval_batch(self, batch_X, batch_y, include_loss = False):
@@ -111,7 +115,7 @@ class Model:
         saver = tf.train.Saver()
         saver.restore(self.sess, os.path.join(CHECKPOINT_FOLDER,"training-best.sav"))
 
-    def train_model(self, epochs = 10, keep_prob = 0.5, stop_after_no_improvement = 10, stop_after_decline = 3 ):
+    def train_model(self, epochs = 10, keep_prob = 0.5, stop_after_no_improvement = 10, stop_after_decline = 3):
         """
         Trains model given number of epocs.  Uses session 'sess'
         :param epochs: maximum number of epochs to train for
@@ -225,4 +229,4 @@ class Model:
             print("Using model from step", best_step)
             self.load_prev_best()
 
-        self.eval_model()
+        self.eval_score = self.eval_model()

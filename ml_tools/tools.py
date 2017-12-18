@@ -163,8 +163,6 @@ def compute_saliency_map(X_in, y_in, model):
     :return: the saliency map of shape [frames, height, width]
     """
 
-    saliency = None
-
     correct_scores = tf.gather_nd(model.pred,
                                   tf.stack((tf.range(X_in.shape[0], dtype="int64"), model.y), axis=1))
 
@@ -294,6 +292,7 @@ def read_track_files(track_folder, min_tracks = 50, ignore_classes = ['false-pos
                 clip_stats_filename = base_name[:base_name.rfind('-')] + ".txt"
                 if os.path.exists(clip_stats_filename):
                     clip_stats = load_tracker_stats(clip_stats_filename)
+                    stats['source'] = base_name
                     stats['event'] = clip_stats.get('event','none')
                 else:
                     continue
