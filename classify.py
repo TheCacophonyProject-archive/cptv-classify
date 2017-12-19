@@ -11,7 +11,7 @@ import numpy as np
 import json
 from ml_tools.tools import write_mpeg, load_colormap, convert_heat_to_img
 import math
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import time
 
 DEFAULT_BASE_PATH = "c:\\cac"
@@ -123,7 +123,10 @@ class ClipClassifier(CPTVFileProcessor):
 
         # enables mpeg preview output
         self.enable_previews = False
-
+        
+        # default font to use
+        self.font = ImageFont.truetype("arial.ttf", 15)
+        
     def identify_track(self, track: Track):
         """
         Runs through track identifying segments, and then returns it's prediction of what kind of animal this is.
@@ -142,8 +145,6 @@ class ClipClassifier(CPTVFileProcessor):
         for _ in range(min(27, track.frames)):
             frame = track.get_frame(0)
             segment.append_frame(frame)
-            predictions.append(np.asarray(np.float32([1 / num_labels for _ in range(num_labels)])))
-            weights.append(0.1)
 
         # go through making classifications at each frame
         # note: we should probably be doing this every 9 frames or so.
@@ -154,13 +155,13 @@ class ClipClassifier(CPTVFileProcessor):
             # segments with small mass are weighted less as we can assume the error is higher here.
             mass = np.float32(np.sum(segment.data[:, :, :, 4])) / 27
 
-            # we use the squareroot here as the mass is in units squared.
+            # we use the square-root here as the mass is in units squared.
             # this effectively means we are giving weight based on the diameter
             # of the object rather than the mass.
             mass_weight = math.sqrt(np.clip(mass/20, 0.02, 1.0))
 
             # reduce confidence when buffer hasn't been filled
-            buffer_weight = math.sqrt(np.clip((i+1) / 27, 0.25, 1.0))
+            buffer_weight = math.sqrt(np.clip(i / 27, 0.25, 1.0))
 
             weight = buffer_weight * mass_weight
 
@@ -206,7 +207,7 @@ class ClipClassifier(CPTVFileProcessor):
                 draw.rectangle([x, y + 16, width - 10, y + 26], outline=(0, 0, 0), fill=(0, 64, 0, 64))
                 draw.rectangle([x, y + 16, 10 + score * (width - 20), y + 26], outline=(0, 0, 0),
                                fill=(64, 255, 0, 250))
-                draw.text([x, y], self.classifier.classes[label])
+                draw.text([x, y], self.classifier.classes[label], font=self.font)
 
             video_frames.append(np.asarray(img))
 
@@ -257,7 +258,7 @@ class ClipClassifier(CPTVFileProcessor):
 
                     # display prediction information
                     x = (rect.left) * FRAME_SCALE
-                    y = (rect.bottom if rect.bottom < (img.height / FRAME_SCALE) - 8 else rect.top-10) * FRAME_SCALE
+                    y = (rect.bottom if rect.bottom < (img.height / FRAME_SCALE) - 8 else rect.top) * FRAME_SCALE
 
                     # get a string indicating our current prediction.
                     if frame_offset < 27:
@@ -273,9 +274,9 @@ class ClipClassifier(CPTVFileProcessor):
                         if confidence >= 0.7:
                             prediction_string = "{} {:.1f}%".format(label, confidence * 100)
                         else:
-                            prediction_string = "{}? {:.1f}%".format(confidence * 100)
+                            prediction_string = "?{}? {:.1f}%".format(label, confidence * 100)
 
-                    draw.text((x,y),prediction_string)
+                    draw.text((x,y),prediction_string, font=self.font)
 
             video_frames.append(np.asarray(img))
 
