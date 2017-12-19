@@ -233,18 +233,31 @@ class ClipClassifier(CPTVFileProcessor):
 
         # increased resolution of video file.
         # videos look much better scaled up
-        FRAME_SCALE = 3.0
+        FRAME_SCALE = 4.0
 
         video_frames = []
 
+        auto_min = np.min(tracker.frames[0])
+        auto_max = np.max(tracker.frames[0])
+
         # write video
-        for frame_number, filtered in enumerate(tracker.filtered_frames):
+        for frame_number in range(len(tracker.frames)):
 
-            frame = 3 * filtered + TrackExtractor.TEMPERATURE_MIN
+            thermal = tracker.frames[frame_number]
+            filtered = tracker.filtered_frames[frame_number]
 
-            img = convert_heat_to_img(frame, self.colormap, tracker.TEMPERATURE_MIN, tracker.TEMPERATURE_MAX)
-            img = img.resize((int(img.width * FRAME_SCALE), int(img.height * FRAME_SCALE)), Image.NEAREST)
-            draw = ImageDraw.Draw(img)
+            filtered = 3 * filtered + TrackExtractor.TEMPERATURE_MIN
+
+            auto_min = 0.95 * auto_min + 0.05 * np.min(thermal)
+            auto_max = 0.95 * auto_max+ 0.05 * np.max(thermal)
+
+            thermal_image = convert_heat_to_img(thermal, self.colormap, auto_min, auto_max)
+            thermal_image = thermal_image.resize((int(thermal_image.width * FRAME_SCALE), int(thermal_image.height * FRAME_SCALE)), Image.BILINEAR)
+
+            tracking_image = convert_heat_to_img(filtered, self.colormap, tracker.TEMPERATURE_MIN, tracker.TEMPERATURE_MAX)
+            tracking_image = tracking_image.resize((int(tracking_image.width * FRAME_SCALE), int(tracking_image.height * FRAME_SCALE)), Image.BILINEAR)
+
+            draw = ImageDraw.Draw(tracking_image)
 
             # look for any tracks that occur on this frame
             for id, track in enumerate(tracker.tracks):
@@ -258,7 +271,7 @@ class ClipClassifier(CPTVFileProcessor):
 
                     # display prediction information
                     x = (rect.left) * FRAME_SCALE
-                    y = (rect.bottom if rect.bottom < (img.height / FRAME_SCALE) - 8 else rect.top) * FRAME_SCALE
+                    y = (rect.bottom if rect.bottom < (tracking_image.height / FRAME_SCALE) - 8 else rect.top) * FRAME_SCALE
 
                     # get a string indicating our current prediction.
                     if frame_offset < 27:
@@ -272,13 +285,19 @@ class ClipClassifier(CPTVFileProcessor):
                         label = self.classifier.classes[prediction.label_at_time(frame_offset)]
                         confidence = prediction.confidence_at_time(frame_offset)
                         if confidence >= 0.7:
-                            prediction_string = "{} {:.1f}%".format(label, confidence * 100)
+                            prediction_format = "[{:.1f}] {}?"
                         else:
-                            prediction_string = "?{}? {:.1f}%".format(label, confidence * 100)
+                            prediction_format = "[{:.1f}%] {}?"
+                        prediction_string = prediction_format.format(confidence * 100, label)
 
                     draw.text((x,y),prediction_string, font=self.font)
 
-            video_frames.append(np.asarray(img))
+            # put images side by side.
+            side_by_side_image = Image.new('RGB', (tracking_image.width * 2, tracking_image.height))
+            side_by_side_image.paste(thermal_image, (0, 0))
+            side_by_side_image.paste(tracking_image, (tracking_image.width, 0))
+
+            video_frames.append(np.asarray(side_by_side_image))
 
             frame_number += 1
 
