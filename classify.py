@@ -127,6 +127,7 @@ class ClipClassifier(CPTVFileProcessor):
     def identify_track(self, track: Track):
         """
         Runs through track identifying segments, and then returns it's prediction of what kind of animal this is.
+        One prediction will be made for every frame.
         :param track: the track to identify.
         :return: TrackPrediction object
         """
@@ -137,9 +138,9 @@ class ClipClassifier(CPTVFileProcessor):
 
         num_labels = len(self.classifier.classes)
 
-        # preload the 27 frame buffer
-        for i in range(min(27, track.frames)):
-            frame = track.get_frame(i)
+        # preload the 27 frame buffer with the first frame
+        for _ in range(min(27, track.frames)):
+            frame = track.get_frame(0)
             segment.append_frame(frame)
             predictions.append(np.asarray(np.float32([1 / num_labels for _ in range(num_labels)])))
             weights.append(0.1)
@@ -156,7 +157,12 @@ class ClipClassifier(CPTVFileProcessor):
             # we use the squareroot here as the mass is in units squared.
             # this effectively means we are giving weight based on the diameter
             # of the object rather than the mass.
-            weight = math.sqrt(np.clip(mass/30, 0.02, 1.0))
+            mass_weight = math.sqrt(np.clip(mass/20, 0.02, 1.0))
+
+            # reduce confidence when buffer hasn't been filled
+            buffer_weight = math.sqrt(np.clip((i+1) / 27, 0.25, 1.0))
+
+            weight = buffer_weight * mass_weight
 
             predictions.append(self.classifier.predict(segment))
 
@@ -215,7 +221,7 @@ class ClipClassifier(CPTVFileProcessor):
         global _classifier
         if _classifier is None:
             print("Loading Classifier")
-            _classifier = trackclassifier.TrackClassifier('./models/Model 4e-0.833', disable_GPU=False)
+            _classifier = trackclassifier.TrackClassifier('./models/Model-4f-0.849', disable_GPU=True)
 
         return _classifier
 
@@ -267,7 +273,7 @@ class ClipClassifier(CPTVFileProcessor):
                         if confidence >= 0.7:
                             prediction_string = "{} {:.1f}%".format(label, confidence * 100)
                         else:
-                            prediction_string = "<not sure> {:.1f}%".format(confidence * 100)
+                            prediction_string = "{}? {:.1f}%".format(confidence * 100)
 
                     draw.text((x,y),prediction_string)
 
@@ -400,7 +406,7 @@ def main():
     clip_classifier.source_folder = args.source_folder
 
     # just fetch the classifier now so it doesn't impact the benchmarking on the first clip analysed.
-    clip_classifier.classifier
+    _ = clip_classifier.classifier
 
     # apply the colormap
     clip_classifier.colormap = load_colormap(args.color_map)

@@ -19,6 +19,7 @@ import time
 from sklearn.metrics import confusion_matrix
 from matplotlib.colors import LinearSegmentedColormap
 import subprocess
+import scipy
 
 EPISON = 1e-5
 
@@ -212,7 +213,7 @@ def show_saliency_map(model, X_in, y_in):
                 # for motion vectors it's better to use magnitude when drawing them
                 frame_data = np.abs(frame_data)
 
-            plt.imshow(frame_data, aspect='auto', vmin=-4, vmax=4)
+            plt.imshow(frame_data, aspect='auto', vmin=-1, vmax=10)
             plt.axis('off')
 
             plt.subplot(rows, cols, (cols * (channel + 4)) + frame + 1)
@@ -255,6 +256,47 @@ def show_segment(X_in):
     plt.gcf().set_size_inches(cols * 3, rows * 3)
     plt.show()
 
+
+def clipped_zoom(img, zoom_factor, **kwargs):
+
+    # modified from https://stackoverflow.com/questions/37119071/scipy-rotate-and-zoom-an-image-without-changing-its-dimensions
+    h, w = img.shape[:2]
+
+    # width and height of the zoomed image
+    zh = int(np.round(zoom_factor * h))
+    zw = int(np.round(zoom_factor * w))
+
+    # width and height of the section we need to zoom
+    sh = int(np.round(h / zoom_factor))
+    sw = int(np.round(w / zoom_factor))
+
+    # for multichannel images we don't want to apply the zoom factor to the RGB
+    # dimension, so instead we create a tuple of zoom factors, one per array
+    # dimension, with 1's for any trailing dimensions after the width and height.
+    zoom_tuple = (zoom_factor,) * 2 + (1,) * (img.ndim - 2)
+
+    # zooming out
+    if zoom_factor < 1:
+        # bounding box of the clip region within the output array
+        top = (h - zh) // 2
+        left = (w - zw) // 2
+        # zero-padding
+        out = np.zeros_like(img)
+        out[top:top+zh, left:left+zw] = scipy.ndimage.interpolation.zoom(img, zoom_tuple, **kwargs)
+
+    # zooming in
+    elif zoom_factor > 1:
+        # bounding box of the clip region within the input array
+        top = (h- sh) // 2
+        left = (w - sw) // 2
+        out = scipy.ndimage.interpolation.zoom(img[top:top+sh, left:left+sw], zoom_tuple, **kwargs)
+        # `out` might still be slightly larger than `img` due to rounding, so
+        # trim off any extra pixels at the edges
+        trim_top = ((out.shape[0] - h) // 2)
+        trim_left = ((out.shape[1] - w) // 2)
+        out = out[trim_top:trim_top+h, trim_left:trim_left+w]
+
+    return out
 
 def read_track_files(track_folder, min_tracks = 50, ignore_classes = ['false-positive'], track_filter = None):
     """ Read in the tracks files from folder. Returns tupple containing list of class names and dictionary mapping from

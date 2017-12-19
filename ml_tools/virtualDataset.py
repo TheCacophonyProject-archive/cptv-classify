@@ -15,7 +15,9 @@ import multiprocessing
 import time
 import numpy as np
 import pickle
-from ml_tools.tools import *
+from ml_tools import tools
+import scipy
+import random
 
 from bisect import bisect
 
@@ -88,7 +90,7 @@ class TrackInfo():
         if not os.path.exists(stats_filename):
             raise Exception("Stats file not found for track {0}".format(self.source))
 
-        stats = load_track_stats(stats_filename)
+        stats = tools.load_track_stats(stats_filename)
 
         label = stats['tag']
 
@@ -198,7 +200,7 @@ class VirtualDataset():
         self.enable_augmentation = False
 
         self.preloader_queue = None
-        self.preloader_thread = None
+        self.preloader_threads = None
 
         self.reloader_stop_flag = False
 
@@ -230,23 +232,29 @@ class VirtualDataset():
         """
         Starts async load process.
         """
+
+        WORKER_THREADS = 2
+
         print("Starting async fetcher")
         self.preloader_queue = queue.Queue()
-        self.preloader_thread = threading.Thread(target=preloader, args=(self.preloader_queue, self, buffer_size))
+        self.preloader_threads = [threading.Thread(target=preloader, args=(self.preloader_queue, self, buffer_size)) for _ in range(WORKER_THREADS)]
         self.reloader_stop_flag = False
-        self.preloader_thread.start()
+        for thread in self.preloader_threads:
+            thread.start()
 
     def stop_async_load(self, buffer_size = 64):
         """
         Stops async worker thread.
         """
-        if self.preloader_thread is not None:
+        if self.preloader_threads is not None:
             self.reloader_stop_flag = True
-            self.preloader_thread.join()
+            for thread in self.preloader_threads:
+                thread.join()
 
     def next_batch(self, n, disable_async=False):
         """
         Returns a batch of n items (X, y) from dataset.
+        If enabled augmentation will be applied.
         """
         # if async is enabled use it.
         if not disable_async and self.preloader_queue is not None:
@@ -264,12 +272,11 @@ class VirtualDataset():
         batch_y = []
         for i in range(n):
             index =  self.sample()
-            sample_data = self.fetch_segment(self.segments[index])
-            if self.enable_augmentation: sample_data = self.apply_augmentation(sample_data)
+            sample_data = self.fetch_segment(self.segments[index], augment=self.enable_augmentation)
             sample_tag = self.segments[index].tag
             class_index = self.class_index[sample_tag]
 
-            batch_X.append(sample_data[:27])
+            batch_X.append(sample_data)
             batch_y.append(class_index)
 
         X = np.asarray(batch_X)
@@ -328,21 +335,17 @@ class VirtualDataset():
         normalizer = self.segment_cdf[-1]
         self.segment_cdf = [x / normalizer for x in self.segment_cdf]
 
-    def fetch_segment(self, segment: TrackInfo, enable_slow_read=False):
-        """ Fetch a single segments from disk.  If this has been pre-exported loads the cached copy """
-
+    def fetch_segment(self, segment: SegmentInfo, include_padding=False, normalise=True, augment=False):
+        """ Fetch a single segments from disk from the prewritten segment cache. """
         if os.path.exists(segment.save_path):
-            return pickle.load(open(segment.save_path, 'rb'))
+            data = pickle.load(open(segment.save_path, 'rb'))
+            if augment: data = self.apply_augmentation(data)
+            if normalise: data = self.apply_normalisation(data)
+            return data if include_padding else data[:27]
 
-        if not enable_slow_read:
-            raise Exception("Segment data not found for {0}".format(segment.save_path))
-
-        # do a slow read, load the whole track in and then select segment
-        return self.fetch_track(self.tracks[segment.source])[segment.index]
-
-    def fetch_track(self, track: TrackInfo, padding = 0):
+    def get_raw_track_segments(self, track: TrackInfo, padding = 0):
         """
-        Fetch all segments for a track from disk.
+        Fetch all segments for a track from disk.  These segments will be unnormalised
         :param track:
         :param padding: number of additional frames to try and add at the end of each segment.
         :return:
@@ -363,18 +366,6 @@ class VirtualDataset():
 
         frame_count, width, height = frames.shape
 
-        # filtered needs threshold applied?
-        # this removes some useful information, but also helps with overfitting.
-        filtered = filtered - 20
-        filtered[filtered < 0] = 0
-
-        # apply normalisation
-        if len(self.normalisation_constants) != 0:
-            frames = (frames + self.normalisation_constants[0][0]) / self.normalisation_constants[0][1]
-            filtered = (filtered + self.normalisation_constants[1][0]) / self.normalisation_constants[1][1]
-            flow[:, :, 0] = (flow[:, :, 0] + self.normalisation_constants[2][0]) / self.normalisation_constants[2][1]
-            flow[:, :, 1] = (flow[:, :, 1] + self.normalisation_constants[3][0]) / self.normalisation_constants[3][1]
-
         segment_data_list = []
         for segment in track.segments:
             segment_width = len(frames[segment.offset:segment.offset + TrackInfo.SEGMENT_WIDTH + padding])
@@ -387,48 +378,19 @@ class VirtualDataset():
 
         return segment_data_list
 
-    def fetch_all(self):
-        """ Fetches all segments from dataset, returns (X, y, segments) """
+    def fetch_all(self, augment=False, normalise=True):
+        """ Fetches all segments from data set, returns (X, y) """
 
-        # todo: just load in the segments in the normal way rather than getting the tracks.
+        data = np.zeros((len(self.segments), TrackInfo.SEGMENT_WIDTH, 64, 64, 5), dtype=np.float16)
+        labels = []
 
-        total_segments = len(self.segments)
+        for i, segment in enumerate(self.segments):
+            data[i] = self.fetch_segment(segment, augment=augment, normalise=normalise)
+            labels.append(self.class_index[segment.tag])
 
-        if total_segments == 0:
-            return None, None, None
+        return (data, np.asarray(labels))
 
-        # just fetch 1 segment to see what the dims are
-        seg = self.fetch_segment(self.segments[0], enable_slow_read=True)
-        _, width, height, channels = seg.shape
-
-        data = np.zeros((total_segments, TrackInfo.SEGMENT_WIDTH, width, height, channels), dtype=np.float16)
-
-        class_indexes = []
-
-        segments = []
-
-        counter = 0
-        for track_name, track in self.tracks.items():
-
-            segments_data = self.fetch_track(track)
-
-            if len(segments_data) == 0:
-                continue
-
-            track_data = np.asarray(segments_data)
-
-            data[counter:counter + len(segments_data), :, :, :, :] = track_data
-
-            counter += len(segments_data)
-
-            # get classes
-            class_indexes += [self.class_index[segment.tag] for segment in track.segments]
-
-            segments += track.segments
-
-        return data, np.asarray(class_indexes), segments
-
-    def write_out_segments(self, padding = 9, overwrite=False):
+    def write_out_segments(self, padding=9, overwrite=False):
         """
         Writes all segments to disk in an easily to load form.
         :param padding: addtional frames to add at the end of the segment.  Allows for jittering the first frame.
@@ -451,7 +413,7 @@ class VirtualDataset():
             if len(required_segments) == 0:
                 continue
 
-            segments_data = self.fetch_track(track, padding)
+            segments_data = self.get_raw_track_segments(track, padding)
             for segment_info, segment_data in zip(self.tracks[track_name].segments, segments_data):
                 path = os.path.dirname(segment_info.save_path)
                 if segment_info in required_segments:
@@ -532,6 +494,21 @@ class VirtualDataset():
 
         self.rebuild_cdf()
 
+    def apply_normalisation(self, data):
+        # apply normalisation
+        for channel in range(5):
+
+            # note we switch up to float32 here to get enough precision for the preprocessing.
+            offset, scale, power = self.normalisation_constants[channel]
+            frame = np.float32(data[:, :, :, channel])
+            frame = (frame + offset)
+            if power != 1:
+                frame = np.power(np.abs(frame), power) * np.sign(frame)
+            frame = frame / scale
+            data[:, :, :, channel] = frame
+
+        return data
+
     def apply_augmentation(self, segment):
         """ Applies a random augmentation to the segment. """
 
@@ -539,6 +516,37 @@ class VirtualDataset():
         extra_frames = len(segment) - 27
         offset = random.randint(0, extra_frames)
         segment = segment[offset:offset+27]
+
+        mask = segment[:, :, :, 4]
+
+        # apply scaling
+        if random.randint(0, 1) == 0:
+            av_mass = np.sum(mask) / len(mask)
+            scale_options = []
+            if av_mass > 50: scale_options.append('down')
+            if av_mass < 100: scale_options.append('up')
+            scale_method = np.random.choice(scale_options)
+
+            up_scale = [1.25, 1.5, 1.75, 2.0, 2.25, 2.5]
+            down_scale = [0.25, 0.33, 0.5, 0.75]
+
+            if scale_method == 'up':
+                scale = np.random.choice(up_scale)
+            else:
+                scale = np.random.choice(down_scale)
+
+            for i in range(27):
+                segment[i,:,:] = tools.clipped_zoom(np.float32(segment[i,:,:]), scale, order=1)
+
+        # introduce noise onto non masked area.
+        # this doesn't work so well as we need to also add noise during testing, which I don't want to do.
+        # it's also quite slow
+        """
+        noise = np.random.normal(loc=0.0, scale=1, size=[27, 64, 64])
+        noise = noise * (1 - mask)
+        segment[:, :, :, 1] += noise
+        segment[:, :, :, 2:4] += noise[:, :, :, np.newaxis] * 0.2
+        """
 
         if random.randint(0,1) == 0:
             return np.flip(segment, axis = 2)
