@@ -14,6 +14,8 @@ import math
 from PIL import Image, ImageDraw, ImageFont
 import time
 
+from datetime import datetime
+
 DEFAULT_BASE_PATH = "c:\\cac"
 
 _classifier = None
@@ -123,9 +125,16 @@ class ClipClassifier(CPTVFileProcessor):
 
         # enables mpeg preview output
         self.enable_previews = False
+
+        self.enable_gpu = True
         
         # default font to use
         self.font = ImageFont.truetype("arial.ttf", 15)
+
+        self.start_date = None
+        self.end_date = None
+
+        self.excluded_folders.add('untaggged')
         
     def identify_track(self, track: Track):
         """
@@ -222,7 +231,7 @@ class ClipClassifier(CPTVFileProcessor):
         global _classifier
         if _classifier is None:
             print("Loading Classifier")
-            _classifier = trackclassifier.TrackClassifier('./models/Model-4f-0.849', disable_GPU=True)
+            _classifier = trackclassifier.TrackClassifier('./models/Model-4f-0.849', disable_GPU=not self.enable_gpu)
 
         return _classifier
 
@@ -321,6 +330,14 @@ class ClipClassifier(CPTVFileProcessor):
         :return: returns true if file should be processed, false otherwise
         """
 
+        # check date filters
+        date_part = os.path.basename(filename).split("-")[0]
+        date = datetime.strptime(date_part, "%Y%m%d")
+        if self.start_date and date < self.start_date:
+            return False
+        if self.end_date and date > self.end_date:
+            return False
+
         # look to see of the destination file already exists.
         base_name = os.path.splitext(os.path.join(self.output_folder, os.path.basename(filename)))[0]
         meta_filename = base_name + '.txt'
@@ -361,6 +378,9 @@ class ClipClassifier(CPTVFileProcessor):
         meta_filename = base_name + '.txt'
         track_mpeg_filename = base_name + "-{} {} {}.mpg"
         track_meta_filename = base_name + "-{}.txt"
+
+        # reset track predictions
+        self.track_prediction = {}
 
         print(os.path.basename(filename)+":")
 
@@ -424,13 +444,23 @@ def main():
     parser.add_argument('-o', '--output-folder', default=os.path.join(DEFAULT_BASE_PATH, "autotagged"),help='Folder to output tracks to')
     parser.add_argument('-s', '--source-folder', default=os.path.join(DEFAULT_BASE_PATH, "clips"),help='Source folder root with class folders containing CPTV files')
     parser.add_argument('-c', '--color-map', default="custom_colormap.dat",help='Colormap to use when exporting MPEG files')
+    parser.add_argument('--start-date', help='Only clips on or after this day will be processed (format YYYY-MM-DD)')
+    parser.add_argument('--end-date', help='Only clips on or before this day will be processed (format YYYY-MM-DD)')
+    parser.add_argument('--disable-gpu', action='count', help='Disables GPU processing')
 
     args = parser.parse_args()
 
     clip_classifier = ClipClassifier()
+    clip_classifier.enable_gpu = not args.disable_gpu
     clip_classifier.enable_previews = args.enable_preview
     clip_classifier.output_folder = args.output_folder
     clip_classifier.source_folder = args.source_folder
+
+    if args.start_date:
+        clip_classifier.start_date = datetime.strptime(args.end_date, "%Y-%m-%d")
+
+    if args.end_date:
+        clip_classifier.end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
 
     # just fetch the classifier now so it doesn't impact the benchmarking on the first clip analysed.
     _ = clip_classifier.classifier
@@ -450,7 +480,9 @@ def main():
     # set verbose
     clip_classifier.verbose = args.verbose
 
-    if os.path.splitext(args.source)[-1].lower() == '.cptv':
+    if args.source == "all":
+        clip_classifier.process_root(args.source_folder)
+    elif os.path.splitext(args.source)[-1].lower() == '.cptv':
         clip_classifier.process_file(os.path.join(args.source_folder, args.source))
     else:
         clip_classifier.process_folder(os.path.join(args.source_folder, args.source))
