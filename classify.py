@@ -416,6 +416,7 @@ class ClipClassifier(CPTVFileProcessor):
         # record results in text file.
         f = open(meta_filename,'w')
         save_file = {}
+        save_file['source'] = filename
         save_file['tracks'] = []
         for track, prediction in self.track_prediction.items():
             track_info = {}
@@ -457,7 +458,7 @@ def main():
     clip_classifier.source_folder = args.source_folder
 
     if args.start_date:
-        clip_classifier.start_date = datetime.strptime(args.end_date, "%Y-%m-%d")
+        clip_classifier.start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
 
     if args.end_date:
         clip_classifier.end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
