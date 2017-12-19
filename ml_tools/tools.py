@@ -23,11 +23,12 @@ import scipy
 
 EPISON = 1e-5
 
-def write_mpeg(filename, frames):
+def write_mpeg(filename, frames, crf_quality=21):
     """
     Saves a sequence of rgb image frames as an MPEG video.
     :param filename: output filename
     :param frames: numpy array of shape [frame, height, width, 3] of type uint8
+    :param crr_quality: Constant rate factor.  0-51, with lower values being higher quality
     """
 
     # from http://zulko.github.io/blog/2013/09/27/read-and-write-video-frames-in-python-using-ffmpeg/
@@ -55,9 +56,8 @@ def write_mpeg(filename, frames):
                '-i', '-',  # The imput comes from a pipe
                '-an',  # Tells FFMPEG not to expect any audio
                '-vcodec', 'libx264',
-               '-tune', 'grain',  # good for keepinn the grain in our videos
-               '-crf', '21',  # quality, lower is better
-               '-crf', '21',  # quality, lower is better
+               '-tune', 'grain',  # good for keeping the grain in our videos
+               '-crf', str(crf_quality),  # quality, lower is better
                '-pix_fmt', 'yuv420p',  # window thumbnails require yuv420p for some reason
                filename]
 

@@ -235,6 +235,8 @@ class ClipClassifier(CPTVFileProcessor):
         # videos look much better scaled up
         FRAME_SCALE = 4.0
 
+        NORMALISATION_SMOOTH = 0.95
+
         video_frames = []
 
         auto_min = np.min(tracker.frames[0])
@@ -248,19 +250,27 @@ class ClipClassifier(CPTVFileProcessor):
 
             filtered = 3 * filtered + TrackExtractor.TEMPERATURE_MIN
 
-            auto_min = 0.95 * auto_min + 0.05 * np.min(thermal)
-            auto_max = 0.95 * auto_max+ 0.05 * np.max(thermal)
+            auto_min = NORMALISATION_SMOOTH * auto_min + (1-NORMALISATION_SMOOTH) * np.min(thermal)
+            auto_max = NORMALISATION_SMOOTH * auto_max + (1-NORMALISATION_SMOOTH) * np.max(thermal)
 
             thermal_image = convert_heat_to_img(thermal, self.colormap, auto_min, auto_max)
             thermal_image = thermal_image.resize((int(thermal_image.width * FRAME_SCALE), int(thermal_image.height * FRAME_SCALE)), Image.BILINEAR)
 
             tracking_image = convert_heat_to_img(filtered, self.colormap, tracker.TEMPERATURE_MIN, tracker.TEMPERATURE_MAX)
-            tracking_image = tracking_image.resize((int(tracking_image.width * FRAME_SCALE), int(tracking_image.height * FRAME_SCALE)), Image.BILINEAR)
+            tracking_image = tracking_image.resize((int(tracking_image.width * FRAME_SCALE), int(tracking_image.height * FRAME_SCALE)), Image.NEAREST)
 
             draw = ImageDraw.Draw(tracking_image)
 
             # look for any tracks that occur on this frame
             for id, track in enumerate(tracker.tracks):
+
+                prediction = self.track_prediction[track]
+
+                # find a track description, which is the final guess of what this class is.
+                guesses = ["{} ({:.1f})%".format(self.classifier.classes[prediction.label(i)], prediction.confidence(i)*100) for i in range(1,4) if prediction.confidence(i) > 0.5]
+                track_description = "\n".join(guesses)
+                track_description.strip()
+
                 frame_offset = frame_number - track.first_frame
                 if 0 < frame_offset < len(track.bounds_history)-1:
 
@@ -273,15 +283,10 @@ class ClipClassifier(CPTVFileProcessor):
                     x = (rect.left) * FRAME_SCALE
                     y = (rect.bottom if rect.bottom < (tracking_image.height / FRAME_SCALE) - 8 else rect.top) * FRAME_SCALE
 
-                    # get a string indicating our current prediction.
-                    if frame_offset < 27:
-                        # not enough information yet...
-                        prediction_string = '...'
                     if track not in self.track_prediction :
                         # no information for this track just ignore
                         prediction_string = ''
                     else:
-                        prediction = self.track_prediction[track]
                         label = self.classifier.classes[prediction.label_at_time(frame_offset)]
                         confidence = prediction.confidence_at_time(frame_offset)
                         if confidence >= 0.7:
@@ -290,7 +295,7 @@ class ClipClassifier(CPTVFileProcessor):
                             prediction_format = "[{:.1f}%] {}?"
                         prediction_string = prediction_format.format(confidence * 100, label)
 
-                    draw.text((x,y),prediction_string, font=self.font)
+                    draw.text((x,y),track_description+'\n'+prediction_string, font=self.font)
 
             # put images side by side.
             side_by_side_image = Image.new('RGB', (tracking_image.width * 2, tracking_image.height))
@@ -305,7 +310,9 @@ class ClipClassifier(CPTVFileProcessor):
             if frame_number > 9 * 60 * 10:
                 break
 
-        write_mpeg(filename, video_frames)
+        # setting quality to 30 gives files approximately the same size as the original CPTV MPEG previews
+        # (but they look quite compressed)
+        write_mpeg(filename, video_frames, crf_quality=21)
 
     def needs_processing(self, filename):
         """
