@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw, ImageFont
 import time
 import ast
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 DEFAULT_BASE_PATH = "c:\\cac"
 
@@ -66,6 +66,27 @@ class TrackPrediction():
     def clarity(self):
         """ The distance between our highest scoring class and second highest scoring class. """
         return self.confidence(1) - self.confidence(2)
+
+    def description(self, classes):
+        """
+        Returns a summary description of this prediction
+        :param classes: Name of class for each label.
+        :return:
+        """
+
+        if self.confidence() > 0.5:
+            first_guess = "{} {:.1f} (clarity {:.1f})".format(
+                classes[self.label()], self.confidence() * 10, self.clarity * 10)
+        else:
+            first_guess = "[nothing]"
+
+        if self.confidence(2) > 0.5:
+            second_guess = "[second guess - {} {:.1f}]".format(
+                classes[self.label(2)], self.confidence(2) * 10)
+        else:
+            second_guess = ""
+
+        return (first_guess+" "+second_guess).strip()
 
     def save(self, filename):
         """ Saves prediction history to file. """
@@ -238,6 +259,25 @@ class ClipClassifier(CPTVFileProcessor):
 
         return _classifier
 
+    def get_clip_prediction(self):
+        """ Returns list of class predictions for all tracks in this clip. """
+
+        class_best_score = [0 for _ in range(len(self.classifier.classes))]
+
+        # keep track of our highest confidence over every track for each class
+        for track, prediction in self.track_prediction.items():
+            for i in range(len(self.classifier.classes)):
+                class_best_score[i] = max(class_best_score[i], prediction.class_best_confidence[i])
+
+        results = []
+        for n in range(1, 1+len(self.classifier.classes)):
+            nth_label = int(np.argsort(class_best_score)[-n])
+            nth_score = float(np.sort(class_best_score)[-n])
+            results.append((self.classifier.classes[nth_label], nth_score))
+
+        return results
+
+
     def export_tracking_preview(self, filename, tracker:TrackExtractor):
         """
         Exports a clip showing the tracking and predictions for objects within the clip.
@@ -343,7 +383,7 @@ class ClipClassifier(CPTVFileProcessor):
         """
 
         # check date filters
-        date_part = os.path.basename(filename).split("-")[0]
+        date_part = str(os.path.basename(filename).split("-")[0])
         date = datetime.strptime(date_part, "%Y%m%d")
         if self.start_date and date < self.start_date:
             return False
@@ -364,22 +404,27 @@ class ClipClassifier(CPTVFileProcessor):
         else:
             raise Exception("Overwrite mode {} not supported.".format(self.overwrite_mode))
 
-    def get_base_name(self, input_filename):
-        """ Returns the base path and filename for an output filename from an input filename. """
-        source_meta_filename = os.path.splitext(input_filename)[0] + ".dat"
+    def get_meta_data(self, filename):
+        """ Reads meta-data for a given cptv file. """
+        source_meta_filename = os.path.splitext(filename)[0] + ".dat"
         if os.path.exists(source_meta_filename):
-            source_stats = ast.literal_eval(open(source_meta_filename, 'r').read())
-            tags = list(set(record['animal'] for record in source_stats['Tags']))
+            meta_data = ast.literal_eval(open(source_meta_filename, 'r').read())
+            tags = list(set(record['animal'] for record in meta_data['Tags']))
             if len(tags) == 0:
                 tag = 'no tag'
             elif len(tags) == 1:
-                tag = tags[0]
+                tag = tags[0] if tags[0] else "none"
             else:
                 tag = 'multi'
-            tag_part = '[' + (tag if tag else "none") + '] '
+            meta_data["primary_tag"] = tag
+            return meta_data
         else:
-            tag_part = ''
+            return None
 
+    def get_base_name(self, input_filename):
+        """ Returns the base path and filename for an output filename from an input filename. """
+        meta_data = self.get_meta_data(input_filename)
+        tag_part = '[' + (meta_data["primary_tag"] if meta_data else "none") + '] '
         return os.path.splitext(os.path.join(self.output_folder, tag_part + os.path.basename(input_filename)))[0]
 
     def process_file(self, filename):
@@ -408,9 +453,9 @@ class ClipClassifier(CPTVFileProcessor):
 
         base_name = self.get_base_name(filename)
 
-        mpeg_filename = base_name + '.mp4'
+        mpeg_filename = base_name + "{}" + '.mp4'
         meta_filename = base_name + '.txt'
-        track_mpeg_filename = base_name + "-{} {} {}.mpg"
+        track_mpeg_filename = base_name + "-{} {}.mpg"
         track_meta_filename = base_name + "-{}.txt"
 
         # reset track predictions
@@ -425,33 +470,39 @@ class ClipClassifier(CPTVFileProcessor):
 
             self.track_prediction[track] = prediction
 
+            description = prediction.description(self.classifier.classes)
+
             prediction.save(track_meta_filename.format(i+1))
 
-            if prediction.confidence() > 0.5:
-                first_guess = "{} {:.1f} (clarity {:.1f})".format(
-                    self.classifier.classes[prediction.label()], prediction.confidence() * 10, prediction.clarity * 10)
-            else:
-                first_guess = "[nothing]"
+            print(" - [{}/{}] prediction: {}".format(i + 1, len(tracker.tracks), description))
 
-            if prediction.confidence(2) > 0.5:
-                second_guess = "[second guess - {} {:.1f}]".format(
-                    self.classifier.classes[prediction.label(2)], prediction.confidence(2)*10)
-            else:
-                second_guess = ""
-
-            print(" - [{}/{}] prediction: {} {}".format(str(i + 1), str(len(tracker.tracks) + 1), first_guess, second_guess))
-
-            if self.enable_previews:
-                self.export_track_preview(track_mpeg_filename.format(i + 1, first_guess, second_guess), track)
+            if self.enable_previews >= 2:
+                self.export_track_preview(track_mpeg_filename.format(i + 1, description), track)
 
         if self.enable_previews:
-            self.export_tracking_preview(mpeg_filename, tracker)
+
+            print(self.get_clip_prediction())
+
+            prediction_string = ""
+            for label, score in self.get_clip_prediction():
+                if score > 0.5:
+                    prediction_string = prediction_string + " {} {:.1f}".format(label, score * 10)
+
+            self.export_tracking_preview(mpeg_filename.format(prediction_string), tracker)
+
+        # read in original metadata
+        meta_data = self.get_meta_data(filename)
 
         # record results in text file.
         f = open(meta_filename,'w')
         save_file = {}
         save_file['source'] = filename
+        save_file['camera'] = meta_data['Device']['devicename']
+        save_file['start_time'] = tracker.video_start_time.isoformat()
+        save_file['end_time'] = (tracker.video_start_time + timedelta(seconds=len(tracker.frames) / 9.0)).isoformat()
+        save_file['original_tag'] = meta_data['primary_tag']
         save_file['tracks'] = []
+        save_file['cptv_meta'] = meta_data
         for track, prediction in self.track_prediction.items():
             track_info = {}
             save_file['tracks'].append(track_info)
