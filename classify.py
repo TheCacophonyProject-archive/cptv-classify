@@ -7,12 +7,15 @@ import os
 from ml_tools.cptvfileprocessor import CPTVFileProcessor
 from ml_tools.trackextractor import TrackExtractor, Track
 from ml_tools import trackclassifier
+from ml_tools import tools
 import numpy as np
 import json
 from ml_tools.tools import write_mpeg, load_colormap, convert_heat_to_img
 import math
+import PIL as pillow
 from PIL import Image, ImageDraw, ImageFont
 import time
+import ast
 
 from datetime import datetime
 
@@ -248,6 +251,10 @@ class ClipClassifier(CPTVFileProcessor):
 
         video_frames = []
 
+        if len(tracker.filtered_frames) == 0:
+            # this occurs when the video was filtered because it was too hot, or had a moving background.
+            return
+
         auto_min = np.min(tracker.frames[0])
         auto_max = np.max(tracker.frames[0])
 
@@ -276,7 +283,10 @@ class ClipClassifier(CPTVFileProcessor):
                 prediction = self.track_prediction[track]
 
                 # find a track description, which is the final guess of what this class is.
-                guesses = ["{} ({:.1f})%".format(self.classifier.classes[prediction.label(i)], prediction.confidence(i)*100) for i in range(1,4) if prediction.confidence(i) > 0.5]
+                guesses = ["{} ({:.1f})".format(
+                    self.classifier.classes[prediction.label(i)], prediction.confidence(i)*10) for i in range(1,4)
+                    if prediction.confidence(i) > 0.5]
+
                 track_description = "\n".join(guesses)
                 track_description.strip()
 
@@ -285,7 +295,9 @@ class ClipClassifier(CPTVFileProcessor):
 
                     # display the track
                     rect = track.bounds_history[frame_offset]
-                    rect_points = [int(p * FRAME_SCALE) for p in [rect.left, rect.top, rect.right, rect.top, rect.right, rect.bottom, rect.left, rect.bottom, rect.left, rect.top]]
+                    rect_points = [int(p * FRAME_SCALE) for p in [rect.left, rect.top, rect.right, rect.top, rect.right,
+                                                                  rect.bottom, rect.left, rect.bottom, rect.left,
+                                                                  rect.top]]
                     draw.line(rect_points, (255, 64, 32))
 
                     # display prediction information
@@ -299,10 +311,10 @@ class ClipClassifier(CPTVFileProcessor):
                         label = self.classifier.classes[prediction.label_at_time(frame_offset)]
                         confidence = prediction.confidence_at_time(frame_offset)
                         if confidence >= 0.7:
-                            prediction_format = "[{:.1f}] {}?"
+                            prediction_format = "[{:.1f}] {}"
                         else:
-                            prediction_format = "[{:.1f}%] {}?"
-                        prediction_string = prediction_format.format(confidence * 100, label)
+                            prediction_format = "[{:.1f}] {}?"
+                        prediction_string = prediction_format.format(confidence * 10, label)
 
                     draw.text((x,y),track_description+'\n'+prediction_string, font=self.font)
 
@@ -339,7 +351,7 @@ class ClipClassifier(CPTVFileProcessor):
             return False
 
         # look to see of the destination file already exists.
-        base_name = os.path.splitext(os.path.join(self.output_folder, os.path.basename(filename)))[0]
+        base_name = self.get_base_name(filename)
         meta_filename = base_name + '.txt'
 
         # if no stats file exists we haven't processed file, so reprocess
@@ -351,6 +363,24 @@ class ClipClassifier(CPTVFileProcessor):
             return not os.path.exists(meta_filename)
         else:
             raise Exception("Overwrite mode {} not supported.".format(self.overwrite_mode))
+
+    def get_base_name(self, input_filename):
+        """ Returns the base path and filename for an output filename from an input filename. """
+        source_meta_filename = os.path.splitext(input_filename)[0] + ".dat"
+        if os.path.exists(source_meta_filename):
+            source_stats = ast.literal_eval(open(source_meta_filename, 'r').read())
+            tags = list(set(record['animal'] for record in source_stats['Tags']))
+            if len(tags) == 0:
+                tag = 'no tag'
+            elif len(tags) == 1:
+                tag = tags[0]
+            else:
+                tag = 'multi'
+            tag_part = '[' + (tag if tag else "none") + '] '
+        else:
+            tag_part = ''
+
+        return os.path.splitext(os.path.join(self.output_folder, tag_part + os.path.basename(input_filename)))[0]
 
     def process_file(self, filename):
         """
@@ -372,7 +402,11 @@ class ClipClassifier(CPTVFileProcessor):
 
         tracker.extract()
 
-        base_name = os.path.splitext(os.path.join(self.output_folder, os.path.basename(filename)))[0]
+        if len(tracker.tracks) > 10:
+            print(" -warning, found too many tracks.  Using {} of {}".format(10, len(tracker.tracks)))
+            tracker.tracks = tracker.tracks[:10]
+
+        base_name = self.get_base_name(filename)
 
         mpeg_filename = base_name + '.mp4'
         meta_filename = base_name + '.txt'
@@ -395,13 +429,13 @@ class ClipClassifier(CPTVFileProcessor):
 
             if prediction.confidence() > 0.5:
                 first_guess = "{} {:.1f} (clarity {:.1f})".format(
-                    self.classifier.classes[prediction.label()], prediction.confidence() * 100, prediction.clarity * 100)
+                    self.classifier.classes[prediction.label()], prediction.confidence() * 10, prediction.clarity * 10)
             else:
                 first_guess = "[nothing]"
 
             if prediction.confidence(2) > 0.5:
                 second_guess = "[second guess - {} {:.1f}]".format(
-                    self.classifier.classes[prediction.label(2)], prediction.confidence(2)*100)
+                    self.classifier.classes[prediction.label(2)], prediction.confidence(2)*10)
             else:
                 second_guess = ""
 
