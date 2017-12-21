@@ -20,9 +20,12 @@ import ast
 from datetime import datetime, timedelta
 
 DEFAULT_BASE_PATH = "c:\\cac"
-MODEL = './models/Model-4f-0.904'
 
+# We store some cached shared objects as globals as they can not be passed around processes, and therefore would
+# break the worker threads system.  Instead we load them on demand and store them in each processors global space.
 _classifier = None
+_classifier_font = None
+_classifier_font_title = None
 
 class TrackPrediction():
     """
@@ -153,15 +156,30 @@ class ClipClassifier(CPTVFileProcessor):
 
         self.enable_gpu = True
         
-        # default font to use
-        self.font = ImageFont.truetype("arial.ttf", 12)
-        self.font_large = ImageFont.truetype("arialbd.ttf", 16)
-
         self.start_date = None
         self.end_date = None
 
+        self.model_path = None
+
+        # enables exports detailed information for each track.  If preview mode is enabled also enables track previews.
+        self.enable_per_track_information = False
+
         self.excluded_folders.add('untaggged')
-        
+
+    @property
+    def font(self):
+        """ gets default font. """
+        global _classifier_font
+        if not _classifier_font: _classifier_font = ImageFont.truetype("arial.ttf", 12)
+        return _classifier_font
+
+    @property
+    def font_title(self):
+        """ gets default title font. """
+        global _classifier_font_title
+        if not _classifier_font_title: _classifier_font_title = ImageFont.truetype("arialbd.ttf", 16)
+        return _classifier_font_title
+
     def identify_track(self, track: Track):
         """
         Runs through track identifying segments, and then returns it's prediction of what kind of animal this is.
@@ -257,7 +275,7 @@ class ClipClassifier(CPTVFileProcessor):
         global _classifier
         if _classifier is None:
             print("Loading Classifier")
-            _classifier = trackclassifier.TrackClassifier(MODEL, disable_GPU=not self.enable_gpu)
+            _classifier = trackclassifier.TrackClassifier(self.model_path, disable_GPU=not self.enable_gpu)
 
         return _classifier
 
@@ -292,7 +310,7 @@ class ClipClassifier(CPTVFileProcessor):
         if rect.bottom > screen_bounds.bottom:
             rect.y = screen_bounds.bottom - rect.height
 
-    def export_tracking_preview(self, filename, tracker:TrackExtractor):
+    def export_clip_preview(self, filename, tracker:TrackExtractor):
         """
         Exports a clip showing the tracking and predictions for objects within the clip.
         """
@@ -366,7 +384,7 @@ class ClipClassifier(CPTVFileProcessor):
                             prediction_format = "({:.1f} {})?"
                         current_prediction_string = prediction_format.format(confidence * 10, label)
 
-                    header_size = self.font_large.getsize(track_description)
+                    header_size = self.font_title.getsize(track_description)
                     footer_size = self.font.getsize(current_prediction_string)
 
                     # figure out where to draw everything
@@ -379,7 +397,7 @@ class ClipClassifier(CPTVFileProcessor):
                     self.fit_to_screen(header_rect, screen_bounds)
                     self.fit_to_screen(footer_rect, screen_bounds)
 
-                    draw.text((header_rect.x, header_rect.y), track_description, font=self.font_large)
+                    draw.text((header_rect.x, header_rect.y), track_description, font=self.font_title)
                     draw.text((footer_rect.x, footer_rect.y), current_prediction_string, font=self.font)
 
             # put images side by side.
@@ -496,23 +514,21 @@ class ClipClassifier(CPTVFileProcessor):
 
             description = prediction.description(self.classifier.classes)
 
-            prediction.save(track_meta_filename.format(i+1))
-
             print(tracker.tracks, description)
 
             print(" - [{}/{}] prediction: {}".format(i + 1, len(tracker.tracks), description))
 
-            if self.enable_previews:
-                self.export_track_preview(track_mpeg_filename.format(i + 1, description), track)
+            if self.enable_per_track_information:
+                prediction.save(track_meta_filename.format(i+1))
+                if self.enable_previews:
+                    self.export_track_preview(track_mpeg_filename.format(i + 1, description), track)
 
         if self.enable_previews:
-
             prediction_string = ""
             for label, score in self.get_clip_prediction():
                 if score > 0.5:
                     prediction_string = prediction_string + " {} {:.1f}".format(label, score * 10)
-
-            self.export_tracking_preview(mpeg_filename.format(prediction_string), tracker)
+            self.export_clip_preview(mpeg_filename.format(prediction_string), tracker)
 
         # read in original metadata
         meta_data = self.get_meta_data(filename)
@@ -547,16 +563,18 @@ def main():
 
     parser.add_argument('source',help='a CPTV file to process, or a folder name')
 
-    parser.add_argument('-p', '--enable-preview', action='count', help='Enables preview MPEG files (can be slow)')
-    parser.add_argument('-v', '--verbose', action='count', help='Display additional information.')
-    parser.add_argument('-w', '--workers', default='0',help='Number of worker threads to use.  0 disables worker pool and forces a single thread.')
+    parser.add_argument('-p', '--enable-preview', default=False, action='store_true', help='Enables preview MPEG files (can be slow)')
+    parser.add_argument('-t', '--enable-track-info', default=False, action='store_true', help='Enables output of per track information')
+    parser.add_argument('-v', '--verbose', default=0, action='count', help='Display additional information.')
+    parser.add_argument('-w', '--workers', default=0, help='Number of worker threads to use.  0 disables worker pool and forces a single thread.')
     parser.add_argument('-f', '--force-overwrite', default='none',help='Overwrite mode.  Options are all, old, or none.')
     parser.add_argument('-o', '--output-folder', default=os.path.join(DEFAULT_BASE_PATH, "autotagged"),help='Folder to output tracks to')
     parser.add_argument('-s', '--source-folder', default=os.path.join(DEFAULT_BASE_PATH, "clips"),help='Source folder root with class folders containing CPTV files')
     parser.add_argument('-c', '--color-map', default="custom_colormap.dat",help='Colormap to use when exporting MPEG files')
+    parser.add_argument('-m', '--model', default=".\model\model",help='Colormap to use when exporting MPEG files')
     parser.add_argument('--start-date', help='Only clips on or after this day will be processed (format YYYY-MM-DD)')
     parser.add_argument('--end-date', help='Only clips on or before this day will be processed (format YYYY-MM-DD)')
-    parser.add_argument('--disable-gpu', action='count', help='Disables GPU processing')
+    parser.add_argument('--disable-gpu', default=False, action='store_true', help='Disables GPU acclelerated classification')
 
     args = parser.parse_args()
 
@@ -565,6 +583,12 @@ def main():
     clip_classifier.enable_previews = args.enable_preview
     clip_classifier.output_folder = args.output_folder
     clip_classifier.source_folder = args.source_folder
+    clip_classifier.model_path = args.model
+    clip_classifier.enable_per_track_information = args.enable_track_info
+
+    if not os.path.exists(args.model+".meta"):
+        print("No model found named '{}'.".format(args.model+".meta"))
+        exit(13)
 
     if args.start_date:
         clip_classifier.start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
