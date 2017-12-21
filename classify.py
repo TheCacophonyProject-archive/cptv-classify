@@ -5,7 +5,7 @@ Script to classify animals within a CPTV video file.
 import argparse
 import os
 from ml_tools.cptvfileprocessor import CPTVFileProcessor
-from ml_tools.trackextractor import TrackExtractor, Track
+from ml_tools.trackextractor import TrackExtractor, Track, TrackingFrame
 from ml_tools import trackclassifier
 from ml_tools import tools
 import numpy as np
@@ -20,6 +20,7 @@ import ast
 from datetime import datetime, timedelta
 
 DEFAULT_BASE_PATH = "c:\\cac"
+MODEL = './models/Model-4f-0.904'
 
 _classifier = None
 
@@ -153,7 +154,8 @@ class ClipClassifier(CPTVFileProcessor):
         self.enable_gpu = True
         
         # default font to use
-        self.font = ImageFont.truetype("arial.ttf", 15)
+        self.font = ImageFont.truetype("arial.ttf", 12)
+        self.font_large = ImageFont.truetype("arialbd.ttf", 16)
 
         self.start_date = None
         self.end_date = None
@@ -255,7 +257,7 @@ class ClipClassifier(CPTVFileProcessor):
         global _classifier
         if _classifier is None:
             print("Loading Classifier")
-            _classifier = trackclassifier.TrackClassifier('./models/Model-4f-0.849', disable_GPU=not self.enable_gpu)
+            _classifier = trackclassifier.TrackClassifier(MODEL, disable_GPU=not self.enable_gpu)
 
         return _classifier
 
@@ -277,6 +279,18 @@ class ClipClassifier(CPTVFileProcessor):
 
         return results
 
+    def fit_to_screen(self, rect:TrackingFrame, screen_bounds:TrackingFrame):
+        """ Modifies rect so that rect is visible within bounds. """
+        if rect.left < screen_bounds.left:
+            rect.x = screen_bounds.left
+        if rect.top < screen_bounds.top:
+            rect.y = screen_bounds.top
+
+        if rect.right > screen_bounds.right:
+            rect.x = screen_bounds.right - rect.width
+
+        if rect.bottom > screen_bounds.bottom:
+            rect.y = screen_bounds.bottom - rect.height
 
     def export_tracking_preview(self, filename, tracker:TrackExtractor):
         """
@@ -340,23 +354,33 @@ class ClipClassifier(CPTVFileProcessor):
                                                                   rect.top]]
                     draw.line(rect_points, (255, 64, 32))
 
-                    # display prediction information
-                    x = (rect.left) * FRAME_SCALE
-                    y = (rect.bottom if rect.bottom < (tracking_image.height / FRAME_SCALE) - 8 else rect.top) * FRAME_SCALE
-
                     if track not in self.track_prediction :
                         # no information for this track just ignore
-                        prediction_string = ''
+                        current_prediction_string = ''
                     else:
                         label = self.classifier.classes[prediction.label_at_time(frame_offset)]
                         confidence = prediction.confidence_at_time(frame_offset)
                         if confidence >= 0.7:
-                            prediction_format = "[{:.1f}] {}"
+                            prediction_format = "({:.1f} {})"
                         else:
-                            prediction_format = "[{:.1f}] {}?"
-                        prediction_string = prediction_format.format(confidence * 10, label)
+                            prediction_format = "({:.1f} {})?"
+                        current_prediction_string = prediction_format.format(confidence * 10, label)
 
-                    draw.text((x,y),track_description+'\n'+prediction_string, font=self.font)
+                    header_size = self.font_large.getsize(track_description)
+                    footer_size = self.font.getsize(current_prediction_string)
+
+                    # figure out where to draw everything
+                    header_rect = TrackingFrame(rect.left * FRAME_SCALE, rect.top * FRAME_SCALE - header_size[1], header_size[0], header_size[1])
+                    footer_center = ((rect.width * FRAME_SCALE) - footer_size[0]) / 2
+                    footer_rect = TrackingFrame(rect.left * FRAME_SCALE + footer_center, rect.bottom * FRAME_SCALE, footer_size[0], footer_size[1])
+
+                    screen_bounds = TrackingFrame(0,0, tracking_image.width, tracking_image.height)
+
+                    self.fit_to_screen(header_rect, screen_bounds)
+                    self.fit_to_screen(footer_rect, screen_bounds)
+
+                    draw.text((header_rect.x, header_rect.y), track_description, font=self.font_large)
+                    draw.text((footer_rect.x, footer_rect.y), current_prediction_string, font=self.font)
 
             # put images side by side.
             side_by_side_image = Image.new('RGB', (tracking_image.width * 2, tracking_image.height))
@@ -442,7 +466,7 @@ class ClipClassifier(CPTVFileProcessor):
         # extract tracks from file
         tracker = TrackExtractor(filename)
 
-        tracker.reduced_quality_optical_flow = True
+        tracker.reduced_quality_optical_flow = False
         tracker.colormap = load_colormap("custom_colormap.dat")
 
         tracker.extract()
@@ -474,14 +498,14 @@ class ClipClassifier(CPTVFileProcessor):
 
             prediction.save(track_meta_filename.format(i+1))
 
+            print(tracker.tracks, description)
+
             print(" - [{}/{}] prediction: {}".format(i + 1, len(tracker.tracks), description))
 
-            if self.enable_previews >= 2:
+            if self.enable_previews:
                 self.export_track_preview(track_mpeg_filename.format(i + 1, description), track)
 
         if self.enable_previews:
-
-            print(self.get_clip_prediction())
 
             prediction_string = ""
             for label, score in self.get_clip_prediction():

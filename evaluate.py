@@ -17,20 +17,454 @@
 # CPTV files with two or more different tags are excluded from analysis.
 #
 
-"""
-Information required in stats file
-source
-camera
-start time + end time
-original tags
-track information:
-    start + end time
-    label
-    confidence
-    clarity
 
 """
+85.4 start, with 88.15 miss identified
+"""
+
+import os
+import json
+import datetime
+import dateutil.parser
+from ml_tools import tools
+import matplotlib.pyplot as plt
+from sklearn import metrics
+import numpy as np
+import itertools
 
 # number of seconds between clips required to trigger a a new visit
 NEW_VISIT_THRESHOLD = 3*60
 
+# when enabled ignores any clips where an animal was not detected.  Useful if we are only interested in confusion rates
+# not how often we fail to identify an animal.
+EXCLUDE_MISSES = False
+
+SOURCE_FOLDER = "c:\\cac\\autotagged"
+
+# false positive's and 'none' can be mapped to the same label as they represent the same idea.
+NULL_TAGS = ['false-positive', 'none', 'no-tag']
+
+classes = ['bird', 'possum', 'rat', 'hedgehog', 'none']
+
+class TrackResult:
+
+    def __init__(self, track_record):
+        """ Creates track result from track stats entry. """
+        self.start_time = dateutil.parser.parse(track_record["start_time"])
+        self.end_time = dateutil.parser.parse(track_record["end_time"])
+        self.label = track_record["label"]
+        self.score = track_record["confidence"]
+        self.clarity = track_record["clarity"]
+
+        if self.label in NULL_TAGS: self.label = 'none'
+
+    def __repr__(self):
+        return "{} {:.1f} clarity {:.1f}".format(self.label, self.score * 10, self.clarity * 10)
+
+    @property
+    def duration(self):
+        return (self.end_time - self.start_time).seconds
+
+    @property
+    def confidence(self):
+        """ The tracks 'confidence' level which is a combination of the score and clarity. """
+        score_uncertanity = 1-self.score
+        clarity_uncertainty = 1-self.clarity
+        return 1 - ((score_uncertanity * clarity_uncertainty) ** 0.5)
+
+    def print_tree(self, level = 0):
+        print("\t" * level + "-" + str(self))
+
+
+class ClipResult:
+
+    def __init__(self, full_path):
+        """ Initialise a clip result record from given stats file. """
+        self.stats = read_stats_file(full_path)
+
+        self.tracks = [TrackResult(track) for track in self.stats['tracks']]
+
+        self.source = os.path.basename(full_path)
+        self.start_time = dateutil.parser.parse(self.stats['start_time'])
+        self.end_time = dateutil.parser.parse(self.stats['end_time'])
+        self.camera = self.stats['camera']
+        self.true_tag = self.stats['original_tag']
+
+        if self.true_tag in NULL_TAGS: self.true_tag = 'none'
+
+        self.classifier_best_guess, self.classifier_best_score = self.get_best_guess()
+        
+    def get_best_guess(self):
+        """ Returns the best guess from classification data. """
+        class_confidences = {}
+        best_confidence = 0
+        best_label = "none"
+        for track in self.tracks:
+            label = track.label
+
+            confidence = track.confidence
+
+            # we weight the false-positives lower as if they co-occur with an animals we want the animals to come
+            # across
+            if label == 'none': confidence *= 0.5
+
+            class_confidences[label] = max(class_confidences.get(label, 0.0), confidence)
+
+            confidence = class_confidences[label]
+
+            if confidence > best_confidence:
+                best_label = label
+                best_confidence = confidence
+
+        return best_label, best_confidence
+
+    @property
+    def duration(self):
+        return (self.end_time - self.start_time).seconds
+
+    def __repr__(self):
+        return "{} {} {:.1f}".format(self.true_tag, self.classifier_best_guess, self.classifier_best_score * 10)
+
+    def print_tree(self, level = 0):
+        print("\t" * level + "-" + str(self))
+        for track in self.tracks:
+            track.print_tree(level+1)
+
+class VisitResult:
+    """ Represents a visit."""
+
+    def __init__(self, first_clip):
+        """ First clip is used a basis for this visit.  All other clips should have the same camera and true_tag. """
+        self.clips = [first_clip]
+
+    def add_clip(self, clip):
+        """ Adds a clip to the clip list.  Clips are maintained start_time sorted order. """
+        self.clips.append(clip)
+        self.clips.sort(key = lambda clip: clip.start_time)
+
+    @property
+    def camera(self):
+        return self.clips[0].camera
+
+    @property
+    def true_tag(self):
+        return self.clips[0].true_tag
+
+    @property
+    def start_time(self):
+        if len(self.clips) == 0: return 0.0
+        return self.clips[0].start_time
+
+    @property
+    def end_time(self):
+        if len(self.clips) == 0: return 0.0
+        return self.clips[-1].end_time
+
+    @property
+    def duration(self):
+        """ Duration of visit in seconds. """
+        return (self.end_time - self.start_time).seconds
+
+    @property
+    def predicted_tag(self):
+        """ Returns the predicted tag based on best guess from individual clips. """
+        sorted_clips = sorted(self.clips, key = lambda x: x.classifier_best_score)
+        best_guess = sorted_clips[-1].classifier_best_guess
+        return best_guess
+
+    @property
+    def predicted_confidence(self):
+        """ Returns the predicted tag based on best guess from individual clips. """
+        sorted_clips = sorted(self.clips, key=lambda x: x.classifier_best_score)
+        best_guess = sorted_clips[-1].classifier_best_score
+        return best_guess
+
+    def __repr__(self):
+        return "{} {} {:.1f}".format(self.true_tag, self.predicted_tag, self.predicted_confidence * 10)
+
+    def print_tree(self, level = 0):
+        print("\t" * level + "-" + str(self))
+        for clip in self.clips:
+            clip.print_tree(level+1)
+
+
+def is_stats_file(filename):
+    """ returns if filename is a valid stats file. """
+    # note, we also have track stats files which have 4 parts, date-time-camera-track
+    ext = os.path.splitext(filename)[-1].lower()
+    parts = filename.split('-')
+    return ext == '.txt' and len(parts) == 3
+
+def read_stats_file(full_path):
+    """ reads in given stats file. """
+    stats = json.load(open(full_path, 'r'))
+
+    return stats
+
+
+def show_confusion_matrix(true_class, pred_class, labels, normalize=True, title="Classification Confusion Matrix"):
+
+    cm = metrics.confusion_matrix(true_class, pred_class, labels=labels)
+
+    # normalise matrix
+    if normalize:
+        print(cm.sum(axis=1)[np.newaxis, :])
+        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+
+    fig = plt.figure(figsize=(8, 8))
+    ax = fig.add_subplot(111)
+    ax.matshow(cm, cmap=plt.cm.Blues)
+
+    plt.title(title)
+
+    fmt = '.2f' if normalize else 'd'
+    thresh = cm.max() / 2.
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        plt.text(j, i, format(cm[i, j], fmt),
+                 horizontalalignment="center",
+                 color="white" if cm[i, j] > thresh else "black")
+
+    ax.set_xticklabels([''] + labels, rotation=45)
+    ax.set_yticklabels([''] + labels)
+    ax.xaxis.set_tick_params(labeltop='off', labelbottom='on')
+    plt.show()
+
+
+def show_breakdown(true_class, pred_class, title="Confusion Matrix"):
+
+    # confusion matrix
+    show_confusion_matrix(true_class, pred_class, classes, normalize=True, title=title)
+
+    # get f1 scores
+    f1_scores = metrics.f1_score(true_class, pred_class, classes, average=None)
+
+    correct = 0
+    for true, pred in zip(true_class, pred_class):
+        if true==pred: correct += 1
+
+    print("F1 scores:")
+    for class_name, f1_score in zip(classes, f1_scores):
+        print("{:<20} {:.1f}".format(class_name, f1_score * 100))
+
+    print()
+
+    print("Correctly classified {0} / {1} = {2:.2f}%".format(correct, len(true_class), 100 * correct / len(true_class)))
+    print("Final score: {:.1f}".format(100 * np.mean(f1_scores)))
+
+
+def breakdown_tracks(visits):
+    """ Prints out a breakdown of per track accuracy. """
+
+    print("-" * 60)
+    print("Tracks:")
+    total_duration = 0
+    tracks = []
+    true_class = []
+    pred_class = []
+    for visit in visits:
+        for clip in visit.clips:
+            if clip.true_tag not in classes:
+                print("Warning, invalid true tag", clip.true_tag)
+            for track in clip.tracks:
+                tracks.append(track)
+                total_duration += track.duration
+                true_class.append(clip.true_tag)
+                pred_class.append(track.label)
+                if track.label not in classes:
+                    print("Warning, invalid label",track.label)
+
+    print()
+    print("Total tracks: {} {:.1f}h".format(len(tracks), total_duration / 60 / 60))
+
+    print("-" * 60)
+
+    show_breakdown(true_class, pred_class, "Track Confusion Matrix")
+
+
+def breakdown_clips(visits):
+    """ Prints out a breakdown of per clip accuracy. """
+
+    # display each clip
+    print("-" * 60)
+    print("Clips:")
+    errors = 0
+    correct = 0
+    total_duration = 0
+    i = 0
+    clips = []
+    for visit in visits:
+        for clip in visit.clips:
+            i += 1
+            clips.append(clip)
+            #print(i + 1, clip.true_tag, clip.classifier_best_guess, clip.classifier_best_score, clip.start_time)
+            if clip.true_tag == clip.classifier_best_guess:
+                correct += 1
+            else:
+                errors += 1
+            total_duration += clip.duration
+
+    print()
+    print("Total footage: {} clips {:.1f}h".format(len(clips), total_duration/60/60))
+
+    print("-" * 60)
+
+    true_class = [clip.true_tag for clip in clips]
+    pred_class = [clip.classifier_best_guess for clip in clips]
+
+    show_breakdown(true_class, pred_class, "Clip Confusion Matrix")
+
+
+def show_error_tree(visits):
+    """ Prints a tree showing predictions at the visit, clip, and track level. """
+    for i, visit in enumerate(visits):
+        if visit.true_tag != visit.predicted_tag:
+            visit.print_tree()
+
+def breakdown_visits(visits):
+    """ Prints out breakdown of per visit accuracy. """
+
+    # display each visit
+    print("-" * 60)
+    print("Visits:")
+    print("-" * 60)
+
+    correct = 0
+    for i, visit in enumerate(visits):
+        if visit.true_tag == visit.predicted_tag:
+            correct += 1
+
+    # confusion matrix
+    true_class = [visit.true_tag for visit in visits]
+    pred_class = [visit.predicted_tag for visit in visits]
+
+    show_breakdown(true_class, pred_class, "Visit Confusion Matrix")
+
+
+def show_errors_by_score(visits):
+    """ Displays errors in terms of their score level. """
+
+    # visits by score
+
+    errors = []
+    correct = []
+
+    for visit in visits:
+        if visit.true_tag == visit.predicted_tag:
+            correct.append(visit.predicted_confidence * 10)
+        else:
+            errors.append(visit.predicted_confidence * 10)
+
+    bin_divisions = 2
+    bins = [x/bin_divisions for x in range(10*bin_divisions+1)]
+    plt.title("Visit Errors by Confidence")
+    plt.hist(correct, bins=bins, label='correct')
+    plt.hist(errors, bins=bins, label='error')
+    plt.legend()
+    plt.show()
+
+    print("Max confidence on misclassified visit",max(errors))
+
+    # clips by score
+
+    errors = []
+    correct = []
+
+    for visit in visits:
+        for clip in visit.clips:
+            if clip.true_tag == clip.classifier_best_guess:
+                correct.append(clip.classifier_best_score * 10)
+            else:
+                errors.append(clip.classifier_best_score * 10)
+
+    plt.title("Clip Errors by Confidence")
+    plt.hist(correct, bins=bins, label='correct')
+    plt.hist(errors, bins=bins, label='error')
+    plt.legend()
+    plt.show()
+
+    # tracks by score
+
+    errors = []
+    correct = []
+
+    for visit in visits:
+        for clip in visit.clips:
+            for track in clip.tracks:
+                if clip.true_tag == track.label:
+                    correct.append(track.confidence * 10)
+                else:
+                    errors.append(track.confidence * 10)
+
+    plt.title("Track Errors by Confidence")
+    plt.hist(correct, bins=bins, label='correct')
+    plt.hist(errors, bins=bins, label='error')
+    plt.legend()
+    plt.show()
+
+def print_summary(visits):
+    """ Outputs a summary of visits.  This does not require pre-tagged data. """
+    pass
+
+
+
+
+def evaluate_folder(path):
+    """ Runs through all stats files in a folder and evaluates the performance of the classifier. """
+
+    all_records = []
+
+    # fetch the records
+    for filename in os.listdir(path):
+        if is_stats_file(filename):
+            record = ClipResult(os.path.join(path, filename))
+            if record.classifier_best_guess in classes:
+                all_records.append(record)
+
+    # check basic stats, such as missed objects, incorrect objects.
+
+    cameras = set([record.camera for record in all_records])
+
+    print("Found cameras:",cameras)
+
+    visits = []
+
+    for camera in cameras:
+
+        print("Processing ",camera)
+
+        records = [record for record in all_records if record.camera == camera and record.true_tag in classes]
+
+        # group clips into visits by camera
+        records.sort(key=lambda x: x.start_time)
+
+        current_visit = None
+        previous_record_end = None
+
+        for record in records:
+
+            if not current_visit:
+                current_visit = VisitResult(record)
+                visits.append(current_visit)
+
+            gap = (record.start_time - previous_record_end).seconds if previous_record_end else 0.0
+
+            # start a new visit if gap is too large, or tag changes.
+            if gap >= NEW_VISIT_THRESHOLD or (record.true_tag != current_visit.true_tag):
+                current_visit = VisitResult(record)
+                visits.append(current_visit)
+            else:
+                current_visit.add_clip(record)
+
+            previous_record_end= record.end_time
+
+    breakdown_tracks(visits)
+    breakdown_clips(visits)
+    breakdown_visits(visits)
+    show_errors_by_score(visits)
+
+def main():
+    evaluate_folder(SOURCE_FOLDER)
+
+
+if __name__ == "__main__":
+    main()
