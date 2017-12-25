@@ -7,12 +7,10 @@ import os
 from ml_tools.cptvfileprocessor import CPTVFileProcessor
 from ml_tools.trackextractor import TrackExtractor, Track, TrackingFrame
 from ml_tools import trackclassifier
-from ml_tools import tools
 import numpy as np
 import json
 from ml_tools.tools import write_mpeg, load_colormap, convert_heat_to_img
 import math
-import PIL as pillow
 from PIL import Image, ImageDraw, ImageFont
 import time
 import ast
@@ -38,7 +36,7 @@ class TrackPrediction():
     def __init__(self, prediction_history, weights = None):
 
         # the highest confidence rating for each class
-        self.class_best_confidence = [0.0]
+        self.class_best_confidence = None
 
         # history of raw probability for each class at every frame
         self.prediction_history = prediction_history.copy()
@@ -160,6 +158,9 @@ class ClipClassifier(CPTVFileProcessor):
         self.end_date = None
 
         self.model_path = None
+
+        # uses a higher quality version of the optical flow algorithm.
+        self.high_quality_optical_flow = True
 
         # enables exports detailed information for each track.  If preview mode is enabled also enables track previews.
         self.enable_per_track_information = False
@@ -484,7 +485,7 @@ class ClipClassifier(CPTVFileProcessor):
         # extract tracks from file
         tracker = TrackExtractor(filename)
 
-        tracker.reduced_quality_optical_flow = False
+        tracker.reduced_quality_optical_flow = not self.high_quality_optical_flow
         tracker.colormap = load_colormap("custom_colormap.dat")
 
         tracker.extract()
@@ -551,6 +552,7 @@ class ClipClassifier(CPTVFileProcessor):
             track_info['label'] = self.classifier.classes[prediction.label()]
             track_info['confidence'] = prediction.confidence()
             track_info['clarity'] = prediction.clarity
+            track_info['class_confidence'] = prediction.class_best_confidence
         json.dump(save_file, f, indent=4)
 
         ms_per_frame = (time.time() - start) * 1000 / max(1, len(tracker.frames))
@@ -565,6 +567,7 @@ def main():
 
     parser.add_argument('-p', '--enable-preview', default=False, action='store_true', help='Enables preview MPEG files (can be slow)')
     parser.add_argument('-t', '--enable-track-info', default=False, action='store_true', help='Enables output of per track information')
+    parser.add_argument('-q', '--high-quality-optical-flow', default=False, action='store_true', help='Enabled higher quality optical flow (slow)')
     parser.add_argument('-v', '--verbose', default=0, action='count', help='Display additional information.')
     parser.add_argument('-w', '--workers', default=0, help='Number of worker threads to use.  0 disables worker pool and forces a single thread.')
     parser.add_argument('-f', '--force-overwrite', default='none',help='Overwrite mode.  Options are all, old, or none.')
@@ -585,6 +588,13 @@ def main():
     clip_classifier.source_folder = args.source_folder
     clip_classifier.model_path = args.model
     clip_classifier.enable_per_track_information = args.enable_track_info
+    clip_classifier.high_quality_optical_flow = args.high_quality_optical_flow
+
+    if clip_classifier.high_quality_optical_flow:
+        print("High quality optical flow enabled.")
+
+    if not clip_classifier.enable_gpu:
+        print("GPU mode disabled.")
 
     if not os.path.exists(args.model+".meta"):
         print("No model found named '{}'.".format(args.model+".meta"))

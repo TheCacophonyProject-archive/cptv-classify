@@ -17,29 +17,22 @@
 # CPTV files with two or more different tags are excluded from analysis.
 #
 
-
-"""
-85.4 start, with 88.15 miss identified
-"""
-
 import os
 import json
-import datetime
+from datetime import datetime, timedelta
 import dateutil.parser
 from ml_tools import tools
 import matplotlib.pyplot as plt
 from sklearn import metrics
 import numpy as np
 import itertools
+import argparse
+import seaborn as sns
 
 # number of seconds between clips required to trigger a a new visit
 NEW_VISIT_THRESHOLD = 3*60
 
-# when enabled ignores any clips where an animal was not detected.  Useful if we are only interested in confusion rates
-# not how often we fail to identify an animal.
-EXCLUDE_MISSES = False
-
-SOURCE_FOLDER = "c:\\cac\\autotagged"
+DEFAULT_SOURCE_FOLDER = "c:\\cac\\autotagged"
 
 # false positive's and 'none' can be mapped to the same label as they represent the same idea.
 NULL_TAGS = ['false-positive', 'none', 'no-tag']
@@ -63,7 +56,7 @@ class TrackResult:
 
     @property
     def duration(self):
-        return (self.end_time - self.start_time).seconds
+        return (self.end_time - self.start_time).total_seconds()
 
     @property
     def confidence(self):
@@ -120,7 +113,7 @@ class ClipResult:
 
     @property
     def duration(self):
-        return (self.end_time - self.start_time).seconds
+        return (self.end_time - self.start_time).total_seconds()
 
     def __repr__(self):
         return "{} {} {:.1f}".format(self.true_tag, self.classifier_best_guess, self.classifier_best_score * 10)
@@ -163,7 +156,7 @@ class VisitResult:
     @property
     def duration(self):
         """ Duration of visit in seconds. """
-        return (self.end_time - self.start_time).seconds
+        return (self.end_time - self.start_time).total_seconds()
 
     @property
     def predicted_tag(self):
@@ -401,16 +394,8 @@ def show_errors_by_score(visits):
     plt.legend()
     plt.show()
 
-def print_summary(visits):
-    """ Outputs a summary of visits.  This does not require pre-tagged data. """
-    pass
-
-
-
-
-def evaluate_folder(path):
-    """ Runs through all stats files in a folder and evaluates the performance of the classifier. """
-
+def get_visits(path):
+    """ Scans a folder loading all clip statstics, and formats them into visits. """
     all_records = []
 
     # fetch the records
@@ -424,13 +409,9 @@ def evaluate_folder(path):
 
     cameras = set([record.camera for record in all_records])
 
-    print("Found cameras:",cameras)
-
     visits = []
 
     for camera in cameras:
-
-        print("Processing ",camera)
 
         records = [record for record in all_records if record.camera == camera and record.true_tag in classes]
 
@@ -446,7 +427,7 @@ def evaluate_folder(path):
                 current_visit = VisitResult(record)
                 visits.append(current_visit)
 
-            gap = (record.start_time - previous_record_end).seconds if previous_record_end else 0.0
+            gap = (record.start_time - previous_record_end).total_seconds() if previous_record_end else 0.0
 
             # start a new visit if gap is too large, or tag changes.
             if gap >= NEW_VISIT_THRESHOLD or (record.true_tag != current_visit.true_tag):
@@ -457,13 +438,110 @@ def evaluate_folder(path):
 
             previous_record_end= record.end_time
 
+    return visits
+
+
+def show_visits_over_days(visits):
+
+    # bin visits in days
+    visit_bins = {}
+    for visit in visits:
+        if visit.predicted_tag == 'none': continue
+        visit_midpoint = visit.start_time + timedelta(seconds=visit.duration / 2)
+        date = visit_midpoint.replace(hour=0, minute=0, second=0, microsecond=0)
+        offset = (visit_midpoint - date).total_seconds() / 60 / 60
+        if date not in visit_bins: visit_bins[date] = []
+        visit_bins[date].append((offset, visit))
+
+    bins = range(0, 24)
+
+    for date, visit_bin in visit_bins.items():
+        plt.title("Classifier Visit Sightings for {}".format(date.strftime("%D %Y/%m/%d")))
+
+        xs = []
+
+        for label in classes:
+            xs.append([])
+            for offset, visit in visit_bin:
+                if visit.predicted_tag != label:
+                    continue
+                xs[-1].append(offset)
+
+        print(xs)
+
+        for i, x in enumerate(xs):
+            plt.hist(x, bins, histtype='bar', stacked=True, label=classes[i])
+            ax = plt.gca()
+            ax.set_ylim([0, 10])
+        plt.legend()
+        plt.show()
+
+def plot_visits(visits, true_tags=False):
+    """
+    Plots visits over time for each camera.
+    :param visits: list of visit objects
+    :param true_tags: If true true (hand labeled) tags will be used instead of predicted tags
+    :return:
+    """
+
+    start_date = min([visit.start_time for visit in visits])
+
+    visits = sorted(visits, key = lambda x: x.predicted_tag)
+    cameras = sorted(list(set([visit.camera for visit in visits])))
+
+    data_x = [visit.camera for visit in visits]
+    data_y = [(visit.start_time - start_date).total_seconds() / (60*60*24) for visit in visits]
+    data_c = [visit.true_tag if true_tags else visit.predicted_tag for visit in visits]
+    data_s = [visit.duration/60 for visit in visits]
+    plt.figure(figsize=(14,6))
+    plt.title("Strip plot for week starting {}".format(start_date.strftime("%Y/%m/%d")))
+    #sns.swarmplot(y=data_x,x=data_y, order=cameras, hue_order=classes, linewidth=0.5, hue=data_c, dodge=True)
+    sns.stripplot(y=data_x, x=data_y, order=cameras, hue_order=classes, linewidth=0.5, jitter = 0.25, hue=data_c, dodge=True)
+
+    plt.show()
+
+
+def print_summary(visits):
+    """ Outputs a summary of visits.  This does not require pre-tagged data. """
+
+    print("Found {} visits.".format(len(visits)))
+
+    animal_visits = {}
+    for label in classes:
+        animal_visits[label] = 0
+
+    for visit in visits:
+        animal_visits[visit.predicted_tag] += 1
+
+    for class_name, visit_count in animal_visits.items():
+        print("{:<10} {}".format(class_name, visit_count))
+
+    show_visits_over_days(visits)
+    plot_visits(visits, true_tags=True)
+
+
+
+def print_evaluation(visits):
+    """ Runs through all stats files in a folder and evaluates the performance of the classifier. """
     breakdown_tracks(visits)
     breakdown_clips(visits)
     breakdown_visits(visits)
     show_errors_by_score(visits)
 
 def main():
-    evaluate_folder(SOURCE_FOLDER)
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('-s', '--source-folder', default=os.path.join(DEFAULT_SOURCE_FOLDER), help='Source folder containing .txt files exported by classify.py')
+    parser.add_argument('-x', '--show-extended-evaluation', default=False, action='store_true', help='Evalulates results against pre-tagged ground truth.')
+
+    args = parser.parse_args()
+
+    visits = get_visits(args.source_folder)
+
+    if args.show_extended_evaluation:
+        print_evaluation(visits)
+    else:
+        print_summary(visits)
 
 
 if __name__ == "__main__":
