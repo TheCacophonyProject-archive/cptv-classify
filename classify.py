@@ -538,12 +538,14 @@ class ClipClassifier(CPTVFileProcessor):
         f = open(meta_filename,'w')
         save_file = {}
         save_file['source'] = filename
-        save_file['camera'] = meta_data['Device']['devicename']
         save_file['start_time'] = tracker.video_start_time.isoformat()
         save_file['end_time'] = (tracker.video_start_time + timedelta(seconds=len(tracker.frames) / 9.0)).isoformat()
-        save_file['original_tag'] = meta_data['primary_tag']
+
+        if meta_data:
+            save_file['camera'] = meta_data['Device']['devicename']
+            save_file['cptv_meta'] = meta_data
+            save_file['original_tag'] = meta_data['primary_tag']
         save_file['tracks'] = []
-        save_file['cptv_meta'] = meta_data
         for track, prediction in self.track_prediction.items():
             track_info = {}
             save_file['tracks'].append(track_info)
