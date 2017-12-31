@@ -10,6 +10,7 @@ from ml_tools import trackclassifier
 import numpy as np
 import json
 from ml_tools.tools import write_mpeg, load_colormap, convert_heat_to_img
+from ml_tools import tools
 import math
 from PIL import Image, ImageDraw, ImageFont
 import time
@@ -449,9 +450,9 @@ class ClipClassifier(CPTVFileProcessor):
 
     def get_meta_data(self, filename):
         """ Reads meta-data for a given cptv file. """
-        source_meta_filename = os.path.splitext(filename)[0] + ".dat"
+        source_meta_filename = os.path.splitext(filename)[0] + ".txt"
         if os.path.exists(source_meta_filename):
-            meta_data = ast.literal_eval(open(source_meta_filename, 'r').read())
+            meta_data = tools.load_clip_metadata(source_meta_filename)
             tags = list(set(record['animal'] for record in meta_data['Tags']))
             if len(tags) == 0:
                 tag = 'no tag'
@@ -555,7 +556,8 @@ class ClipClassifier(CPTVFileProcessor):
             track_info['confidence'] = prediction.confidence()
             track_info['clarity'] = prediction.clarity
             track_info['class_confidence'] = prediction.class_best_confidence
-        json.dump(save_file, f, indent=4)
+
+        json.dump(save_file, f, indent=4, cls=tools.CustomJSONEncoder)
 
         ms_per_frame = (time.time() - start) * 1000 / max(1, len(tracker.frames))
         if self.verbose:
@@ -565,7 +567,7 @@ def main():
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('source',help='a CPTV file to process, or a folder name')
+    parser.add_argument('source',help='a CPTV file to process, or a folder name, or "all" for all files within subdirectories of source folder.')
 
     parser.add_argument('-p', '--enable-preview', default=False, action='store_true', help='Enables preview MPEG files (can be slow)')
     parser.add_argument('-t', '--enable-track-info', default=False, action='store_true', help='Enables output of per track information')

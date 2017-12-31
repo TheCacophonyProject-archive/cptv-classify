@@ -10,6 +10,7 @@ import pickle
 import tensorflow as tf
 import math
 import matplotlib.pyplot as plt
+import datetime
 import itertools
 import gzip
 import json
@@ -180,6 +181,17 @@ def compute_saliency_map(X_in, y_in, model):
     saliency = model.sess.run([grads], feed_dict=feed_dict)[0]
 
     return saliency
+
+
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime.datetime):
+            return obj.isoformat()
+            # Let the base class default method raise the TypeError
+        if isinstance(obj, Rectangle):
+            return int(obj.left), int(obj.top), int(obj.right), int(obj.bottom)
+        # Let the base class default method raise the TypeError
+        return json.JSONEncoder.default(self, obj)
 
 
 def show_saliency_map(model, X_in, y_in):
@@ -358,6 +370,20 @@ def read_track_files(track_folder, min_tracks = 50, ignore_classes = ['false-pos
         print("{0:<10} {1} tracks {2}".format(class_name, len(class_tracks[class_name]), filter_string))
 
     return classes, class_tracks
+
+def load_clip_metadata(filename):
+    """
+    Loads a metadata file for a clip.
+    :param filename: full path and filename to stats file
+    :return: returns the stats file
+    """
+    with open(filename, 'r') as t:
+        # add in some metadata stats
+        stats = json.load(t)
+
+    stats['recordingDateTime'] = dateutil.parser.parse(stats['recordingDateTime'])
+
+    return stats
 
 def get_classification_info(model, batch_X, batch_y):
     """
