@@ -281,8 +281,10 @@ class ClipClassifier(CPTVFileProcessor):
         """
         global _classifier
         if _classifier is None:
-            print("Loading Classifier")
+            t0 = datetime.now()
+            print("classifier loading")
             _classifier = trackclassifier.TrackClassifier(self.model_path, disable_GPU=not self.enable_gpu)
+            print("classifier loaded ({})".format(datetime.now() - t0))
 
         return _classifier
 
