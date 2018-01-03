@@ -3,9 +3,6 @@ Module to handle tracking of objects in thermal video.
 """
 
 # we need to use a non GUI backend.  AGG works but is quite slow so I used SVG instead.
-import matplotlib
-matplotlib.use("SVG")
-
 import matplotlib.pyplot as plt
 
 import numpy as np

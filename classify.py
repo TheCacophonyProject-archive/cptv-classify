@@ -166,6 +166,9 @@ class ClipClassifier(CPTVFileProcessor):
         # enables exports detailed information for each track.  If preview mode is enabled also enables track previews.
         self.enable_per_track_information = False
 
+        # includes both original, and predicted tag in filename
+        self.include_prediction_in_filename = False
+
         self.excluded_folders.add('untaggged')
 
     @property
@@ -467,8 +470,11 @@ class ClipClassifier(CPTVFileProcessor):
 
     def get_base_name(self, input_filename):
         """ Returns the base path and filename for an output filename from an input filename. """
-        meta_data = self.get_meta_data(input_filename)
-        tag_part = '[' + (meta_data["primary_tag"] if meta_data else "none") + '] '
+        if self.include_prediction_in_filename:
+            meta_data = self.get_meta_data(input_filename)
+            tag_part = '[' + (meta_data["primary_tag"] if meta_data else "none") + '] '
+        else:
+            tag_part = ''
         return os.path.splitext(os.path.join(self.output_folder, tag_part + os.path.basename(input_filename)))[0]
 
     def process_file(self, filename):
@@ -497,7 +503,11 @@ class ClipClassifier(CPTVFileProcessor):
 
         base_name = self.get_base_name(filename)
 
-        mpeg_filename = base_name + "{}" + '.mp4'
+        if self.include_prediction_in_filename:
+            mpeg_filename = base_name + "{}" + '.mp4'
+        else:
+            mpeg_filename = base_name + '.mp4'
+
         meta_filename = base_name + '.txt'
         track_mpeg_filename = base_name + "-{} {}.mpg"
         track_meta_filename = base_name + "-{}.txt"
@@ -579,6 +589,9 @@ def main():
     parser.add_argument('-s', '--source-folder', default=os.path.join(DEFAULT_BASE_PATH, "clips"),help='Source folder root with class folders containing CPTV files')
     parser.add_argument('-c', '--color-map', default="custom_colormap.dat",help='Colormap to use when exporting MPEG files')
     parser.add_argument('-m', '--model', default=".\models\Model-4f-0.904",help='Model to use for classification')
+
+    parser.add_argument('-i', '--include-prediction-in-filename', default=False, action='store_true', help='Adds class scores to output files')
+
     parser.add_argument('--start-date', help='Only clips on or after this day will be processed (format YYYY-MM-DD)')
     parser.add_argument('--end-date', help='Only clips on or before this day will be processed (format YYYY-MM-DD)')
     parser.add_argument('--disable-gpu', default=False, action='store_true', help='Disables GPU acclelerated classification')
@@ -593,6 +606,7 @@ def main():
     clip_classifier.model_path = args.model
     clip_classifier.enable_per_track_information = args.enable_track_info
     clip_classifier.high_quality_optical_flow = args.high_quality_optical_flow
+    clip_classifier.include_prediction_in_filename = args.include_prediction_in_filename
 
     if clip_classifier.high_quality_optical_flow:
         print("High quality optical flow enabled.")
