@@ -19,6 +19,11 @@ from ml_tools.tools import write_mpeg, load_colormap, convert_heat_to_img
 from ml_tools.trackextractor import TrackExtractor, Track, TrackingFrame
 
 DEFAULT_BASE_PATH = "c:\\cac"
+HERE = os.path.dirname(__file__)
+RESOURCES_PATH=os.path.join(HERE, "resources")
+
+def resource_path(name):
+    return os.path.join(RESOURCES_PATH, name)
 
 # We store some cached shared objects as globals as they can not be passed around processes, and therefore would
 # break the worker threads system.  Instead we load them on demand and store them in each processors global space.
@@ -175,14 +180,14 @@ class ClipClassifier(CPTVFileProcessor):
     def font(self):
         """ gets default font. """
         global _classifier_font
-        if not _classifier_font: _classifier_font = ImageFont.truetype("arial.ttf", 12)
+        if not _classifier_font: _classifier_font = ImageFont.truetype(resource_path("Ubuntu-R.ttf"), 12)
         return _classifier_font
 
     @property
     def font_title(self):
         """ gets default title font. """
         global _classifier_font_title
-        if not _classifier_font_title: _classifier_font_title = ImageFont.truetype("arialbd.ttf", 16)
+        if not _classifier_font_title: _classifier_font_title = ImageFont.truetype(resource_path("Ubuntu-B.ttf"), 14)
         return _classifier_font_title
 
     def identify_track(self, track: Track):
@@ -279,8 +284,10 @@ class ClipClassifier(CPTVFileProcessor):
         """
         global _classifier
         if _classifier is None:
-            print("Loading Classifier")
+            t0 = datetime.now()
+            print("classifier loading")
             _classifier = trackclassifier.TrackClassifier(self.model_path, disable_GPU=not self.enable_gpu)
+            print("classifier loaded ({})".format(datetime.now() - t0))
 
         return _classifier
 
@@ -493,7 +500,7 @@ class ClipClassifier(CPTVFileProcessor):
         tracker = TrackExtractor(filename)
 
         tracker.reduced_quality_optical_flow = not self.high_quality_optical_flow
-        tracker.colormap = load_colormap("custom_colormap.dat")
+        tracker.colormap = load_colormap(resource_path("custom_colormap.dat"))
 
         tracker.extract()
 
@@ -588,8 +595,8 @@ def main():
     parser.add_argument('-o', '--output-folder', default=os.path.join(DEFAULT_BASE_PATH, "autotagged"),help='Folder to output tracks to')
     parser.add_argument('-s', '--source-folder', default=os.path.join(DEFAULT_BASE_PATH, "clips"),help='Source folder root with class folders containing CPTV files')
     parser.add_argument('-c', '--color-map', default="custom_colormap.dat",help='Colormap to use when exporting MPEG files')
-    parser.add_argument('-m', '--model', default=".\models\Model-4f-0.904",help='Model to use for classification')
 
+    parser.add_argument('-m', '--model', default=os.path.join(HERE, "models", "Model-4f-0.904"), help='Model to use for classification')
     parser.add_argument('-i', '--include-prediction-in-filename', default=False, action='store_true', help='Adds class scores to output files')
 
     parser.add_argument('--start-date', help='Only clips on or after this day will be processed (format YYYY-MM-DD)')
