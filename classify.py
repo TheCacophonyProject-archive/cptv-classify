@@ -3,20 +3,20 @@ Script to classify animals within a CPTV video file.
 """
 
 import argparse
-import os
-from ml_tools.cptvfileprocessor import CPTVFileProcessor
-from ml_tools.trackextractor import TrackExtractor, Track, TrackingFrame
-from ml_tools import trackclassifier
-import numpy as np
 import json
-from ml_tools.tools import write_mpeg, load_colormap, convert_heat_to_img
-from ml_tools import tools
 import math
-from PIL import Image, ImageDraw, ImageFont
+import os
 import time
-import ast
-
 from datetime import datetime, timedelta
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+from ml_tools import tools
+from ml_tools import trackclassifier
+from ml_tools.cptvfileprocessor import CPTVFileProcessor
+from ml_tools.tools import write_mpeg, load_colormap, convert_heat_to_img
+from ml_tools.trackextractor import TrackExtractor, Track, TrackingFrame
 
 DEFAULT_BASE_PATH = "c:\\cac"
 

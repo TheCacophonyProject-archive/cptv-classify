@@ -4,3 +4,7 @@ cptv
 opencv-python
 numpy
 scipy
+sklearn
+seaborn
+tensorflow
+pillow
