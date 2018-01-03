@@ -5,6 +5,7 @@ import os
 import glob
 import time
 import multiprocessing
+import logging
 
 #####################################
 # Helper functions
@@ -92,9 +93,9 @@ class CPTVFileProcessor:
         for folder in folders:
             if os.path.basename(folder).lower() in self.excluded_folders:
                 continue
-            print("Processing folder {0}".format(folder))
+            logging.info("Processing folder {0}".format(folder))
             self.process_folder(folder)
-        print("Done.")
+        logging.info("Done.")
 
 
     def process_folder(self, folder_path, **kargs):
@@ -124,23 +125,13 @@ class CPTVFileProcessor:
                 pool.close()
                 pool.join()
             except KeyboardInterrupt:
-                print("KeyboardInterrupt, terminating.")
+                logging.warning("KeyboardInterrupt, terminating.")
                 pool.terminate()
                 exit()
             else:
                 pool.close()
 
-    def log_message(self, message):
-        """ Record message in log.  Will be printed if verbose is enabled. """
-        # note, python has really good logging... I should probably make use of this.
-        if self.verbose: print(message)
-
-    def log_warning(self, message):
-        """ Record warning message in log.  Will be printed if verbose is enabled. """
-        # note, python has really good logging... I should probably make use of this.
-        print("Warning:",message)
-
 if __name__ == '__main__':
     # for some reason the fork method seems to memory leak, and unix defaults to this so we
-    # stick to spawn.  Also, form might be a problem as some numpy commands have multiple threads?
+    # stick to spawn.  Also, fork might be a problem as some numpy commands have multiple threads?
     multiprocessing.set_start_method('spawn')

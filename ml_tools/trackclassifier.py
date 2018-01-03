@@ -2,10 +2,11 @@
 Module classify a tracking window based on a 3 second segment.
 """
 
+
 import os
 import math
 
-# disable logging
+# disable tensorflow logging
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import numpy as np

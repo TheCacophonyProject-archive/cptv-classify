@@ -7,6 +7,8 @@ import json
 import math
 import os
 import time
+import logging
+import sys
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -174,6 +176,9 @@ class ClipClassifier(CPTVFileProcessor):
         # includes both original, and predicted tag in filename
         self.include_prediction_in_filename = False
 
+        # writes metadata to standard out instead of a file.
+        self.write_meta_to_stdout = False
+
         self.excluded_folders.add('untaggged')
 
     @property
@@ -285,9 +290,9 @@ class ClipClassifier(CPTVFileProcessor):
         global _classifier
         if _classifier is None:
             t0 = datetime.now()
-            print("classifier loading")
+            logging.info("classifier loading")
             _classifier = trackclassifier.TrackClassifier(self.model_path, disable_GPU=not self.enable_gpu)
-            print("classifier loaded ({})".format(datetime.now() - t0))
+            logging.info("classifier loaded ({})".format(datetime.now() - t0))
 
         return _classifier
 
@@ -505,7 +510,7 @@ class ClipClassifier(CPTVFileProcessor):
         tracker.extract()
 
         if len(tracker.tracks) > 10:
-            print(" -warning, found too many tracks.  Using {} of {}".format(10, len(tracker.tracks)))
+            Logger.warning(" -warning, found too many tracks.  Using {} of {}".format(10, len(tracker.tracks)))
             tracker.tracks = tracker.tracks[:10]
 
         base_name = self.get_base_name(filename)
@@ -522,7 +527,7 @@ class ClipClassifier(CPTVFileProcessor):
         # reset track predictions
         self.track_prediction = {}
 
-        print(os.path.basename(filename)+":")
+        logging.info(os.path.basename(filename)+":")
 
         # identify each track
         for i, track in enumerate(tracker.tracks):
@@ -533,9 +538,7 @@ class ClipClassifier(CPTVFileProcessor):
 
             description = prediction.description(self.classifier.classes)
 
-            print(tracker.tracks, description)
-
-            print(" - [{}/{}] prediction: {}".format(i + 1, len(tracker.tracks), description))
+            logging.info(" - [{}/{}] prediction: {}".format(i + 1, len(tracker.tracks), description))
 
             if self.enable_per_track_information:
                 prediction.save(track_meta_filename.format(i+1))
@@ -553,7 +556,6 @@ class ClipClassifier(CPTVFileProcessor):
         meta_data = self.get_meta_data(filename)
 
         # record results in text file.
-        f = open(meta_filename,'w')
         save_file = {}
         save_file['source'] = filename
         save_file['start_time'] = tracker.video_start_time.isoformat()
@@ -574,11 +576,29 @@ class ClipClassifier(CPTVFileProcessor):
             track_info['clarity'] = prediction.clarity
             track_info['class_confidence'] = prediction.class_best_confidence
 
-        json.dump(save_file, f, indent=4, cls=tools.CustomJSONEncoder)
+        if self.write_meta_to_stdout:
+            output = json.dumps(save_file, indent=4, cls=tools.CustomJSONEncoder)
+            print(output)
+        else:
+            f = open(meta_filename, 'w')
+            json.dump(save_file, f, indent=4, cls=tools.CustomJSONEncoder)
 
         ms_per_frame = (time.time() - start) * 1000 / max(1, len(tracker.frames))
         if self.verbose:
-            print("Took {:.1f}ms per frame".format(ms_per_frame))
+            logging.info("Took {:.1f}ms per frame".format(ms_per_frame))
+
+def log_to_stdout():
+    """ Outputs all log entries to standard out. """
+
+    # taken from https://stackoverflow.com/questions/14058453/making-python-loggers-output-all-messages-to-stdout-in-addition-to-log
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(message)s')
+    ch.setFormatter(formatter)
+    root.addHandler(ch)
 
 def main():
 
@@ -597,12 +617,16 @@ def main():
 
     parser.add_argument('-m', '--model', default=os.path.join(HERE, "models", "Model-4f-0.904"), help='Model to use for classification')
     parser.add_argument('-i', '--include-prediction-in-filename', default=False, action='store_true', help='Adds class scores to output files')
+    parser.add_argument('--meta-to-stdout', default=False, action='store_true', help='Writes metadata to standard out instead of a file')
 
     parser.add_argument('--start-date', help='Only clips on or after this day will be processed (format YYYY-MM-DD)')
     parser.add_argument('--end-date', help='Only clips on or before this day will be processed (format YYYY-MM-DD)')
     parser.add_argument('--disable-gpu', default=False, action='store_true', help='Disables GPU acclelerated classification')
 
     args = parser.parse_args()
+
+    if not args.meta_to_stdout:
+        log_to_stdout()
 
     clip_classifier = ClipClassifier()
     clip_classifier.enable_gpu = not args.disable_gpu
@@ -613,15 +637,16 @@ def main():
     clip_classifier.enable_per_track_information = args.enable_track_info
     clip_classifier.high_quality_optical_flow = args.high_quality_optical_flow
     clip_classifier.include_prediction_in_filename = args.include_prediction_in_filename
+    clip_classifier.write_meta_to_stdout = args.meta_to_stdout
 
     if clip_classifier.high_quality_optical_flow:
-        print("High quality optical flow enabled.")
+        logging.info("High quality optical flow enabled.")
 
     if not clip_classifier.enable_gpu:
-        print("GPU mode disabled.")
+        logging.info("GPU mode disabled.")
 
     if not os.path.exists(args.model+".meta"):
-        print("No model found named '{}'.".format(args.model+".meta"))
+        logging.error("No model found named '{}'.".format(args.model+".meta"))
         exit(13)
 
     if args.start_date:
@@ -638,7 +663,7 @@ def main():
 
     clip_classifier.workers_threads = int(args.workers)
     if clip_classifier.workers_threads >= 1:
-        print("Using {0} worker threads".format(clip_classifier.workers_threads))
+        logging.info("Using {0} worker threads".format(clip_classifier.workers_threads))
 
     # set overwrite mode
     if args.force_overwrite.lower() not in ['all', 'old', 'none']:
