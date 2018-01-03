@@ -77,7 +77,7 @@ def load_colormap(filename):
     """ Loads a custom colormap used for creating MPEG previews of tracks. """
 
     if not os.path.exists(filename):
-        return
+        raise Exception("Colormap {} not found".format(filename))
 
     return pickle.load(open(filename, 'rb'))
 
