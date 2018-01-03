@@ -494,7 +494,7 @@ class ClipClassifier(CPTVFileProcessor):
         tracker = TrackExtractor(filename)
 
         tracker.reduced_quality_optical_flow = not self.high_quality_optical_flow
-        tracker.colormap = load_colormap("custom_colormap.dat")
+        tracker.colormap = load_colormap(resource_path("custom_colormap.dat"))
 
         tracker.extract()
 
