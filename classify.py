@@ -585,7 +585,7 @@ def main():
     parser.add_argument('-o', '--output-folder', default=os.path.join(DEFAULT_BASE_PATH, "autotagged"),help='Folder to output tracks to')
     parser.add_argument('-s', '--source-folder', default=os.path.join(DEFAULT_BASE_PATH, "clips"),help='Source folder root with class folders containing CPTV files')
     parser.add_argument('-c', '--color-map', default="custom_colormap.dat",help='Colormap to use when exporting MPEG files')
-    parser.add_argument('-m', '--model', default=".\models\Model-4f-0.904",help='Model to use for classification')
+    parser.add_argument('-m', '--model', default=os.path.join(HERE, "models", "Model-4f-0.904"), help='Model to use for classification')
     parser.add_argument('--start-date', help='Only clips on or after this day will be processed (format YYYY-MM-DD)')
     parser.add_argument('--end-date', help='Only clips on or before this day will be processed (format YYYY-MM-DD)')
     parser.add_argument('--disable-gpu', default=False, action='store_true', help='Disables GPU acclelerated classification')
