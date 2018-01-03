@@ -19,6 +19,11 @@ from ml_tools.tools import write_mpeg, load_colormap, convert_heat_to_img
 from ml_tools.trackextractor import TrackExtractor, Track, TrackingFrame
 
 DEFAULT_BASE_PATH = "c:\\cac"
+HERE = os.path.dirname(__file__)
+RESOURCES_PATH=os.path.join(HERE, "resources")
+
+def resource_path(name):
+    return os.path.join(RESOURCES_PATH, name)
 
 # We store some cached shared objects as globals as they can not be passed around processes, and therefore would
 # break the worker threads system.  Instead we load them on demand and store them in each processors global space.
@@ -172,14 +177,14 @@ class ClipClassifier(CPTVFileProcessor):
     def font(self):
         """ gets default font. """
         global _classifier_font
-        if not _classifier_font: _classifier_font = ImageFont.truetype("arial.ttf", 12)
+        if not _classifier_font: _classifier_font = ImageFont.truetype(resource_path("Ubuntu-R.ttf"), 12)
         return _classifier_font
 
     @property
     def font_title(self):
         """ gets default title font. """
         global _classifier_font_title
-        if not _classifier_font_title: _classifier_font_title = ImageFont.truetype("arialbd.ttf", 16)
+        if not _classifier_font_title: _classifier_font_title = ImageFont.truetype(resource_path("Ubuntu-B.ttf"), 14)
         return _classifier_font_title
 
     def identify_track(self, track: Track):
