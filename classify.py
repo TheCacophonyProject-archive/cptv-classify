@@ -340,20 +340,12 @@ class ClipClassifier(CPTVFileProcessor):
 
         video_frames = []
 
-        if len(tracker.filtered_frames) == 0:
-            # this occurs when the video was filtered because it was too hot, or had a moving background.
-            return
-
         auto_min = np.min(tracker.frames[0])
         auto_max = np.max(tracker.frames[0])
 
-        # write video
         for frame_number in range(len(tracker.frames)):
 
             thermal = tracker.frames[frame_number]
-            filtered = tracker.filtered_frames[frame_number]
-
-            filtered = 3 * filtered + TrackExtractor.TEMPERATURE_MIN
 
             auto_min = NORMALISATION_SMOOTH * auto_min + (1-NORMALISATION_SMOOTH) * np.min(thermal)
             auto_max = NORMALISATION_SMOOTH * auto_max + (1-NORMALISATION_SMOOTH) * np.max(thermal)
@@ -361,68 +353,21 @@ class ClipClassifier(CPTVFileProcessor):
             thermal_image = convert_heat_to_img(thermal, self.colormap, auto_min, auto_max)
             thermal_image = thermal_image.resize((int(thermal_image.width * FRAME_SCALE), int(thermal_image.height * FRAME_SCALE)), Image.BILINEAR)
 
-            tracking_image = convert_heat_to_img(filtered, self.colormap, tracker.TEMPERATURE_MIN, tracker.TEMPERATURE_MAX)
-            tracking_image = tracking_image.resize((int(tracking_image.width * FRAME_SCALE), int(tracking_image.height * FRAME_SCALE)), Image.NEAREST)
+            if tracker.filtered_frames:
+                tracking_image = self.export_tracking_frame(tracker, frame_number, FRAME_SCALE)
 
-            draw = ImageDraw.Draw(tracking_image)
+                # put thermal & tracking images side by side
+                side_by_side_image = Image.new('RGB', (tracking_image.width * 2, tracking_image.height))
+                side_by_side_image.paste(thermal_image, (0, 0))
+                side_by_side_image.paste(tracking_image, (tracking_image.width, 0))
 
-            # look for any tracks that occur on this frame
-            for id, track in enumerate(tracker.tracks):
+                video_frames.append(np.asarray(side_by_side_image))
 
-                prediction = self.track_prediction[track]
-
-                # find a track description, which is the final guess of what this class is.
-                guesses = ["{} ({:.1f})".format(
-                    self.classifier.classes[prediction.label(i)], prediction.confidence(i)*10) for i in range(1,4)
-                    if prediction.confidence(i) > 0.5]
-
-                track_description = "\n".join(guesses)
-                track_description.strip()
-
-                frame_offset = frame_number - track.first_frame
-                if 0 < frame_offset < len(track.bounds_history)-1:
-
-                    # display the track
-                    rect = track.bounds_history[frame_offset]
-                    rect_points = [int(p * FRAME_SCALE) for p in [rect.left, rect.top, rect.right, rect.top, rect.right,
-                                                                  rect.bottom, rect.left, rect.bottom, rect.left,
-                                                                  rect.top]]
-                    draw.line(rect_points, (255, 64, 32))
-
-                    if track not in self.track_prediction :
-                        # no information for this track just ignore
-                        current_prediction_string = ''
-                    else:
-                        label = self.classifier.classes[prediction.label_at_time(frame_offset)]
-                        confidence = prediction.confidence_at_time(frame_offset)
-                        if confidence >= 0.7:
-                            prediction_format = "({:.1f} {})"
-                        else:
-                            prediction_format = "({:.1f} {})?"
-                        current_prediction_string = prediction_format.format(confidence * 10, label)
-
-                    header_size = self.font_title.getsize(track_description)
-                    footer_size = self.font.getsize(current_prediction_string)
-
-                    # figure out where to draw everything
-                    header_rect = TrackingFrame(rect.left * FRAME_SCALE, rect.top * FRAME_SCALE - header_size[1], header_size[0], header_size[1])
-                    footer_center = ((rect.width * FRAME_SCALE) - footer_size[0]) / 2
-                    footer_rect = TrackingFrame(rect.left * FRAME_SCALE + footer_center, rect.bottom * FRAME_SCALE, footer_size[0], footer_size[1])
-
-                    screen_bounds = TrackingFrame(0,0, tracking_image.width, tracking_image.height)
-
-                    self.fit_to_screen(header_rect, screen_bounds)
-                    self.fit_to_screen(footer_rect, screen_bounds)
-
-                    draw.text((header_rect.x, header_rect.y), track_description, font=self.font_title)
-                    draw.text((footer_rect.x, footer_rect.y), current_prediction_string, font=self.font)
-
-            # put images side by side.
-            side_by_side_image = Image.new('RGB', (tracking_image.width * 2, tracking_image.height))
-            side_by_side_image.paste(thermal_image, (0, 0))
-            side_by_side_image.paste(tracking_image, (tracking_image.width, 0))
-
-            video_frames.append(np.asarray(side_by_side_image))
+            else:
+                # no filtered frames available (clip too hot or
+                # background moving?) so just output the original
+                # frame without the tracking frame.
+                video_frames.append(np.asarray(thermal_image))
 
             frame_number += 1
 
@@ -433,6 +378,70 @@ class ClipClassifier(CPTVFileProcessor):
         # setting quality to 30 gives files approximately the same size as the original CPTV MPEG previews
         # (but they look quite compressed)
         write_mpeg(filename, video_frames, crf_quality=21)
+
+
+    def export_tracking_frame(self, tracker, frame_number, frame_scale):
+        filtered = tracker.filtered_frames[frame_number]
+        filtered = 3 * filtered + TrackExtractor.TEMPERATURE_MIN
+
+        tracking_image = convert_heat_to_img(filtered, self.colormap, tracker.TEMPERATURE_MIN, tracker.TEMPERATURE_MAX)
+        tracking_image = tracking_image.resize((int(tracking_image.width * frame_scale), int(tracking_image.height * frame_scale)), Image.NEAREST)
+
+        draw = ImageDraw.Draw(tracking_image)
+
+        # look for any tracks that occur on this frame
+        for id, track in enumerate(tracker.tracks):
+
+            prediction = self.track_prediction[track]
+
+            # find a track description, which is the final guess of what this class is.
+            guesses = ["{} ({:.1f})".format(
+                self.classifier.classes[prediction.label(i)], prediction.confidence(i)*10) for i in range(1,4)
+                if prediction.confidence(i) > 0.5]
+
+            track_description = "\n".join(guesses)
+            track_description.strip()
+
+            frame_offset = frame_number - track.first_frame
+            if 0 < frame_offset < len(track.bounds_history)-1:
+
+                # display the track
+                rect = track.bounds_history[frame_offset]
+                rect_points = [int(p * frame_scale) for p in [rect.left, rect.top, rect.right, rect.top, rect.right,
+                                                                rect.bottom, rect.left, rect.bottom, rect.left,
+                                                                rect.top]]
+                draw.line(rect_points, (255, 64, 32))
+
+                if track not in self.track_prediction :
+                    # no information for this track just ignore
+                    current_prediction_string = ''
+                else:
+                    label = self.classifier.classes[prediction.label_at_time(frame_offset)]
+                    confidence = prediction.confidence_at_time(frame_offset)
+                    if confidence >= 0.7:
+                        prediction_format = "({:.1f} {})"
+                    else:
+                        prediction_format = "({:.1f} {})?"
+                    current_prediction_string = prediction_format.format(confidence * 10, label)
+
+                header_size = self.font_title.getsize(track_description)
+                footer_size = self.font.getsize(current_prediction_string)
+
+                # figure out where to draw everything
+                header_rect = TrackingFrame(rect.left * frame_scale, rect.top * frame_scale - header_size[1], header_size[0], header_size[1])
+                footer_center = ((rect.width * frame_scale) - footer_size[0]) / 2
+                footer_rect = TrackingFrame(rect.left * frame_scale + footer_center, rect.bottom * frame_scale, footer_size[0], footer_size[1])
+
+                screen_bounds = TrackingFrame(0,0, tracking_image.width, tracking_image.height)
+
+                self.fit_to_screen(header_rect, screen_bounds)
+                self.fit_to_screen(footer_rect, screen_bounds)
+
+                draw.text((header_rect.x, header_rect.y), track_description, font=self.font_title)
+                draw.text((footer_rect.x, footer_rect.y), current_prediction_string, font=self.font)
+
+        return tracking_image
+
 
     def needs_processing(self, filename):
         """
@@ -510,7 +519,7 @@ class ClipClassifier(CPTVFileProcessor):
         tracker.extract()
 
         if len(tracker.tracks) > 10:
-            Logger.warning(" -warning, found too many tracks.  Using {} of {}".format(10, len(tracker.tracks)))
+            logging.warning(" -warning, found too many tracks.  Using {} of {}".format(10, len(tracker.tracks)))
             tracker.tracks = tracker.tracks[:10]
 
         base_name = self.get_base_name(filename)
