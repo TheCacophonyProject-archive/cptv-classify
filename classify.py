@@ -519,7 +519,7 @@ class ClipClassifier(CPTVFileProcessor):
         tracker.extract()
 
         if len(tracker.tracks) > 10:
-            Logger.warning(" -warning, found too many tracks.  Using {} of {}".format(10, len(tracker.tracks)))
+            logging.warning(" -warning, found too many tracks.  Using {} of {}".format(10, len(tracker.tracks)))
             tracker.tracks = tracker.tracks[:10]
 
         base_name = self.get_base_name(filename)
