@@ -3,75 +3,23 @@ Helper functions for classification of the tracks extracted from CPTV videos
 """
 
 import os.path
-import PIL as pillow
-import numpy as np
-import random
 import pickle
-import tensorflow as tf
-import math
-import matplotlib.pyplot as plt
 import datetime
 import itertools
-import gzip
 import json
-import dateutil
 import binascii
-import time
-from sklearn.metrics import confusion_matrix
+
 from matplotlib.colors import LinearSegmentedColormap
-import subprocess
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+import PIL as pillow
+import dateutil
+import numpy as np
 import scipy
+import tensorflow as tf
 
 EPISON = 1e-5
 
-def write_mpeg(filename, frames, crf_quality=21):
-    """
-    Saves a sequence of rgb image frames as an MPEG video.
-    :param filename: output filename
-    :param frames: numpy array of shape [frame, height, width, 3] of type uint8
-    :param crr_quality: Constant rate factor.  0-51, with lower values being higher quality
-    """
-
-    # from http://zulko.github.io/blog/2013/09/27/read-and-write-video-frames-in-python-using-ffmpeg/
-    if os.name == 'nt':
-        FFMPEG_BIN = "ffmpeg.exe"  # on Windows
-    else:
-        FFMPEG_BIN = "ffmpeg"  # on Linux ans Mac OS
-
-    # we may have passed a list of frames, if so convert to a 3d array.
-    frames = np.asarray(frames, np.uint8)
-
-    if frames is None or len(frames) == 0:
-        # empty video
-        return
-
-    frame_count, height, width, channels = frames.shape
-
-    command = [FFMPEG_BIN,
-               '-y',  # (optional) overwrite output file if it exists
-               '-f', 'rawvideo',
-               '-vcodec', 'rawvideo',
-               '-s', str(width) + 'x' + str(height),  # size of one frame
-               '-pix_fmt', 'rgb24',
-               '-r', '9',  # frames per second
-               '-i', '-',  # The imput comes from a pipe
-               '-an',  # Tells FFMPEG not to expect any audio
-               '-vcodec', 'libx264',
-               '-tune', 'grain',  # good for keeping the grain in our videos
-               '-crf', str(crf_quality),  # quality, lower is better
-               '-pix_fmt', 'yuv420p',  # window thumbnails require yuv420p for some reason
-               filename]
-
-    # write out the data.
-    try:
-        process = None
-        process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, input=frames.tostring())
-        process.check_returncode()
-    except Exception as e:
-        print("Failed to write MPEG:", e)
-        if process is not None:
-            print("out:", process.stdout)
-            print("error:", process.stderr)
 
 def load_colormap(filename):
     """ Loads a custom colormap used for creating MPEG previews of tracks. """
