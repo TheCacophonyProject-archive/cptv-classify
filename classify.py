@@ -17,7 +17,8 @@ from PIL import Image, ImageDraw, ImageFont
 from ml_tools import tools
 from ml_tools import trackclassifier
 from ml_tools.cptvfileprocessor import CPTVFileProcessor
-from ml_tools.tools import write_mpeg, load_colormap, convert_heat_to_img
+from ml_tools.mpeg_creator import MPEGCreator
+from ml_tools.tools import load_colormap, convert_heat_to_img
 from ml_tools.trackextractor import TrackExtractor, Track, TrackingFrame
 
 
@@ -249,9 +250,8 @@ class ClipClassifier(CPTVFileProcessor):
         """
 
         preview_scale = 4.0
-
-        video_frames = []
         predictions = self.track_prediction[track].prediction_history
+        mpeg = MPEGCreator(filename)
 
         for i in range(track.frames):
             # export a MPEG preview of the track
@@ -281,9 +281,9 @@ class ClipClassifier(CPTVFileProcessor):
                                fill=(64, 255, 0, 250))
                 draw.text([x, y], self.classifier.classes[label], font=self.font)
 
-            video_frames.append(np.asarray(img))
+            mpeg.next_frame(np.asarray(img))
 
-        write_mpeg(filename, video_frames)
+        mpeg.close()
 
     @property
     def classifier(self):
@@ -342,10 +342,12 @@ class ClipClassifier(CPTVFileProcessor):
 
         NORMALISATION_SMOOTH = 0.95
 
-        video_frames = []
-
         auto_min = np.min(tracker.frames[0])
         auto_max = np.max(tracker.frames[0])
+
+        # setting quality to 30 gives files approximately the same size as the original CPTV MPEG previews
+        # (but they look quite compressed)
+        mpeg = MPEGCreator(filename)
 
         for frame_number, thermal in enumerate(tracker.frames):
             auto_min = NORMALISATION_SMOOTH * auto_min + (1 - NORMALISATION_SMOOTH) * np.min(thermal)
@@ -361,25 +363,23 @@ class ClipClassifier(CPTVFileProcessor):
                     side_by_side_image = Image.new('RGB', (tracking_image.width * 2, tracking_image.height))
                     side_by_side_image.paste(thermal_image, (0, 0))
                     side_by_side_image.paste(tracking_image, (tracking_image.width, 0))
-                    video_frames.append(np.asarray(side_by_side_image))
+                    mpeg.next_frame(np.asarray(side_by_side_image))
                 else:
                     # overlay track rectanges on original thermal image
                     thermal_image = self.draw_track_rectangles(tracker, frame_number, FRAME_SCALE, thermal_image)
-                    video_frames.append(np.asarray(thermal_image))
+                    mpeg.next_frame(np.asarray(thermal_image))
 
             else:
                 # no filtered frames available (clip too hot or
                 # background moving?) so just output the original
                 # frame without the tracking frame.
-                video_frames.append(np.asarray(thermal_image))
+                mpeg.next_frame(np.asarray(thermal_image))
 
             # we store the entire video in memory so we need to cap the frame count at some point.
             if frame_number > 9 * 60 * 10:
                 break
 
-        # setting quality to 30 gives files approximately the same size as the original CPTV MPEG previews
-        # (but they look quite compressed)
-        write_mpeg(filename, video_frames, crf_quality=21)
+        mpeg.close()
 
     def export_tracking_frame(self, tracker, frame_number, frame_scale):
         filtered = tracker.filtered_frames[frame_number]
